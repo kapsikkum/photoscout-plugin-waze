@@ -2,11 +2,14 @@
 // activate() registers and answers the data calls from canned responses; a fake DOM does only the calls the
 // views make; a fake map records the layers it is given. Nothing here runs as a test (the glob is *.test.ts).
 import type {
-  CornerPanelDef, DriveAlertSourceDef, LegendEntry, LegendEntryDef, PluginHost, PollOptions, PluginMapClick, SettingsTabDef,
+  CornerPanelDef, DriveAlert, DriveAlertSourceDef, DriveSourceContext, DriveStatus, LegendEntry, LegendEntryDef, LngLat, PluginHost,
+  PollOptions, PluginMapClick, SettingsTabDef,
 } from '../src/sdk/web-api.js';
 
 export const PLUGIN_ID = 'map.24thframe.waze';
 export const scoped = (name: string): string => `${PLUGIN_ID}:${name}`;
+/** The prefix the host gives a Drive source's scoped ids: `<pluginId>:<sourceId>:`. */
+export const DRIVE_PREFIX = `${PLUGIN_ID}:reports:`;
 
 /** A promise that settles after the pending microtasks (the views fetch, then paint). */
 export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -18,6 +21,10 @@ export class FakeEl {
   readonly children: FakeEl[] = [];
   readonly classes = new Set<string>();
   readonly listeners = new Map<string, Array<() => void>>();
+  /** Set by the element that holds this one, so remove() can take it out. */
+  parent: FakeEl | null = null;
+  /** Inline style: a plain object, set the way a view sets `el.style.left`. */
+  readonly style: Record<string, string> = {};
   readonly classList = {
     toggle: (name: string, force?: boolean): boolean => {
       const on = force ?? !this.classes.has(name);
@@ -53,13 +60,24 @@ export class FakeEl {
   }
 
   append(...nodes: FakeEl[]): void {
-    this.children.push(...nodes);
+    for (const node of nodes) {
+      node.parent = this;
+      this.children.push(node);
+    }
   }
 
   replaceChildren(...nodes: FakeEl[]): void {
+    for (const old of this.children) old.parent = null;
     this.children.length = 0;
     this.text = '';
-    this.children.push(...nodes);
+    this.append(...nodes);
+  }
+
+  remove(): void {
+    const parent = this.parent;
+    if (!parent) return;
+    parent.children.splice(parent.children.indexOf(this), 1);
+    this.parent = null;
   }
 
   addEventListener(type: string, fn: () => void): void {
@@ -128,11 +146,13 @@ export interface LayerSpec {
   paint?: Record<string, unknown>;
 }
 
-/** The slice of the maplibre Map the plugin uses: sources, layers, images, and GeoJSON data per source. */
+/** The slice of the maplibre Map the plugin uses: sources, layers, images, GeoJSON data, events and the container. */
 export class FakeMap {
   readonly sources = new Map<string, { data: unknown }>();
   readonly layers: LayerSpec[] = [];
   readonly images: string[] = [];
+  readonly container = new FakeEl('div');
+  private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
 
   addSource(id: string, spec: { data?: unknown }): void {
     this.sources.set(id, { data: spec.data });
@@ -144,6 +164,38 @@ export class FakeMap {
 
   addImage(id: string): void {
     this.images.push(id);
+  }
+
+  hasImage(id: string): boolean {
+    return this.images.includes(id);
+  }
+
+  getContainer(): FakeEl {
+    return this.container;
+  }
+
+  /** A projection that is the identity on [lng, lat], enough for a popup's position to be checked. */
+  project(at: LngLat): { x: number; y: number } {
+    return { x: at[0], y: at[1] };
+  }
+
+  on(type: string, fn: (...args: unknown[]) => void): void {
+    const list = this.handlers.get(type) ?? [];
+    list.push(fn);
+    this.handlers.set(type, list);
+  }
+
+  off(type: string, fn: (...args: unknown[]) => void): void {
+    this.handlers.set(type, (this.handlers.get(type) ?? []).filter((f) => f !== fn));
+  }
+
+  /** Test helper: what the map does when the user does something (a click, a move). */
+  fire(type: string): void {
+    for (const fn of [...(this.handlers.get(type) ?? [])]) fn();
+  }
+
+  listenerCount(type: string): number {
+    return this.handlers.get(type)?.length ?? 0;
   }
 
   getSource(id: string): { setData(data: unknown): void } | undefined {
@@ -174,16 +226,19 @@ export interface Recorded {
   ready: Array<(map: FakeMap) => void | (() => void)>;
   clicks: Array<{ layers: readonly string[]; cb: (e: PluginMapClick) => void }>;
   polls: PollRecord[];
+  /** The GET paths asked for, in order. */
   requests: string[];
+  /** The POST paths sent, in order (the Settings setup button). */
+  posts: string[];
   activity: Array<{ message: string; level: string | undefined }>;
   popups: Array<{ content: unknown }>;
 }
 
-/** A fake PluginHost, and what it recorded. `respond` answers each data request by its path. */
-export function fakeHost(respond: (path: string) => unknown): { host: PluginHost; rec: Recorded } {
+/** A fake PluginHost, and what it recorded. `respond` answers each data request by its path (and method). */
+export function fakeHost(respond: (path: string, init?: RequestInit) => unknown): { host: PluginHost; rec: Recorded } {
   const rec: Recorded = {
     legend: [], entries: {}, corners: [], tabs: [], driveSources: [], ready: [], clicks: [], polls: [],
-    requests: [], activity: [], popups: [],
+    requests: [], posts: [], activity: [], popups: [],
   };
   const host = {
     id: PLUGIN_ID,
@@ -238,9 +293,10 @@ export function fakeHost(respond: (path: string) => unknown): { host: PluginHost
     },
     data: {
       url: (path: string) => `/api/plugins/${PLUGIN_ID}${path}`,
-      json: async (path: string) => {
-        rec.requests.push(path);
-        return respond(path);
+      json: async (path: string, init?: RequestInit) => {
+        if (init?.method === 'POST') rec.posts.push(path);
+        else rec.requests.push(path);
+        return respond(path, init);
       },
       poll: (options: PollOptions<unknown>) => {
         const record: PollRecord = { options, refreshes: 0, stopped: false };
@@ -257,4 +313,48 @@ export function fakeHost(respond: (path: string) => unknown): { host: PluginHost
     },
   };
   return { host: host as unknown as PluginHost, rec };
+}
+
+export interface DriveCtxOptions {
+  map?: FakeMap;
+  /** The on-route distance the host would give for a point; null when the point is not on the road ahead. */
+  routeAhead?: (point: LngLat) => number | null;
+  /** What `speak` answers: the host says it only when voice is on and the fix is fresh. */
+  speakAnswer?: boolean;
+}
+
+/**
+ * A fake Drive context (DriveSourceContext) that records what a source reports: its alerts, its status
+ * line, what it says, and the layers it claims for taps. Its scoped ids take the host's prefix.
+ */
+export function fakeDriveContext(opts: DriveCtxOptions = {}) {
+  const map = opts.map ?? new FakeMap();
+  const reports: DriveAlert[][] = [];
+  const statuses: Array<DriveStatus | null> = [];
+  const spoken: Array<{ text: string; key?: string }> = [];
+  const claims: Array<{ layers: readonly string[]; onTap?: (tap: PluginMapClick) => void }> = [];
+  const aheadOf = opts.routeAhead ?? (() => null);
+  const ctx: DriveSourceContext = {
+    map: map as unknown as DriveSourceContext['map'],
+    position: () => null,
+    route: () => null,
+    heading: () => null,
+    routeAhead: (point) => aheadOf(point),
+    report: (alerts) => { reports.push([...alerts]); },
+    setStatus: (status) => { statuses.push(status); },
+    speak: (text, o) => {
+      spoken.push({ text, key: o?.key });
+      return opts.speakAnswer ?? true;
+    },
+    scopedId: (name) => `${DRIVE_PREFIX}${name}`,
+    mapLayers: (layerIds, o) => {
+      const claim = { layers: [...layerIds], onTap: o?.onTap };
+      claims.push(claim);
+      return () => {
+        const at = claims.indexOf(claim);
+        if (at >= 0) claims.splice(at, 1);
+      };
+    },
+  };
+  return { ctx, map, reports, statuses, spoken, claims };
 }

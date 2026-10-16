@@ -1,21 +1,25 @@
-import type { Bbox, DriveSourceContext, LegendEntry, PluginHost, PluginMapClick, WebPlugin } from './sdk/web-api.js';
+import type { Bbox, DriveAlert, DriveSourceContext, LegendEntry, PluginHost, PluginMapClick, WebPlugin } from './sdk/web-api.js';
 import { createHeatWindowStore, HEAT_DEFAULT_MS, heatmapGeoJSON } from './web/heat.js';
-import { addHeatLayer, addReportIcons, addReportLayers, EMPTY_COLLECTION, setSourceData, type WazeLayerIds } from './web/layers.js';
+import { addHeatLayer, addReportIcons, addReportLayers, EMPTY_COLLECTION, setSourceData, type PinLayerIds, type WazeLayerIds } from './web/layers.js';
 import { alertsPath, heatmapPath, statusPath } from './web/query.js';
+import { DRIVE_ERROR_TEXT, DRIVE_TICK_MS, announceNearest, driveStatusFor } from './web/drive.js';
 import { driveAlerts, reportGeoJSON, reportPopup } from './web/reports.js';
 import { reportsActivity } from './web/status.js';
-import type { WazeAlertsResponse, WazeHeatmapResponse, WazeStatusResponse } from './web/types.js';
-import { renderRangeSelector, renderStatusSettings, reportPopupElement } from './web/view.js';
+import type { WazeAlertsResponse, WazeHeatmapResponse, WazeSetupView, WazeStatusResponse } from './web/types.js';
+import { renderRangeSelector, renderStatusSettings, reportPopupElement, showTapPopup } from './web/view.js';
 
 /**
  * Police & hazards, web half. Everything it adds goes through the plugin web API (src/sdk/web-api.ts):
  *   - the Police & hazards legend toggle and the Police heatmap toggle (host.legend);
  *   - the report pins, with their popup (host.map.onReady, onClick, showPopup);
  *   - the heatmap, with its time window in the map corner (host.panel.addCorner);
- *   - the Settings tab: harvester status, first-run instructions for admins, the time window (host.settings);
- *   - Drive's warning for the reports near the car (host.drive.addAlertSource).
+ *   - the Settings tab: harvester status, the admin's Set up button, first-run instructions for admins,
+ *     the time window (host.settings);
+ *   - Drive's reports: the route-ahead banner, the spoken warning, the status line, its on/off button, and the
+ *     pins on the Drive map with their popup (host.drive.addAlertSource, 1.1.0).
  * The data comes from this plugin's own routes, read through host.data, so nothing reaches another plugin
- * or the core app. Ported from the core app's map/waze.ts, map/policeHeat.ts, MapPage.tsx and WazeSettings.tsx.
+ * or the core app. Ported from the core app's map/waze.ts, map/policeHeat.ts, MapPage.tsx, WazeSettings.tsx
+ * and the Drive screen (pages/Drive.tsx, drive/reports.ts).
  */
 
 const WAZE_KEY = 'waze';
@@ -95,16 +99,49 @@ const plugin: WebPlugin = {
       render: (el, { isAdmin }) => renderStatusSettings(el, {
         isAdmin,
         fetchStatus: (check: boolean) => host.data.json<WazeStatusResponse>(statusPath(check)),
+        // POST /setup: the server checks the caller is an admin and answers 403 otherwise.
+        startSetup: () => host.data.json<WazeSetupView>('/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }),
         activity: (message, level) => host.activity(message, level),
         windowStore,
       }),
     });
 
+    // Core's Drive reports, as a Drive source. The banner shows the nearest report on the road ahead (`filter`),
+    // the status line says what the feed is doing, the on/off button is `defaultOn` (core's "Reports on"), and
+    // the pins run from the moment the Drive map is up, while planning too (`runs`), as core's pins do.
     host.drive.addAlertSource({
       id: 'reports',
-      label: 'Police & hazard reports',
+      label: 'Reports',
+      title: 'Warn about police and hazard reports ahead',
+      defaultOn: true,
+      filter: 'route-ahead',
+      runs: 'always',
       start(ctx: DriveSourceContext) {
         const failures = failureWatch(host, 'Police and hazard reports are unavailable right now');
+        // The Drive map is its own map, so the pins are drawn on it under this source's scoped ids.
+        const pins: PinLayerIds = {
+          reportsSource: ctx.scopedId('reports-src'),
+          reports: ctx.scopedId('reports'),
+          labels: ctx.scopedId('labels'),
+          icons: ctx.scopedId('icon-'),
+        };
+        addReportIcons(ctx.map, pins.icons);
+        addReportLayers(ctx.map, pins);
+
+        // The Drive screen gives a tap on these pins to us: the popup opens and no destination is picked (core's behaviour).
+        let closePopup: (() => void) | null = null;
+        const claim = ctx.mapLayers([pins.reports, pins.labels], {
+          onTap: (tap) => {
+            closePopup?.();
+            const popup = reportPopup(tap.features[0]?.properties, formatTime);
+            closePopup = showTapPopup(tap.map, tap.lngLat, reportPopupElement(popup.title, popup.lines));
+          },
+        });
+
+        // The warning is the nearest report ahead, asked for every two seconds as core's Drive screen does.
+        let latest: DriveAlert[] = [];
+        const speech = setInterval(() => { announceNearest(ctx, latest); }, DRIVE_TICK_MS);
+
         const poll = host.data.poll<WazeAlertsResponse>({
           map: ctx.map,
           intervalMs: PINS_POLL_MS,
@@ -112,13 +149,34 @@ const plugin: WebPlugin = {
           fetch: ({ signal, bounds }) => host.data.json<WazeAlertsResponse>(alertsPath(boxOf(bounds), 'navigation'), { signal }),
           onData: (res) => {
             failures.recover();
-            ctx.report(driveAlerts(res.alerts, Date.now()));
+            latest = driveAlerts(res.alerts, Date.now());
+            ctx.report(latest);
+            setSourceData(ctx.map, pins.reportsSource, reportGeoJSON(res.alerts));
+            ctx.setStatus(driveStatusFor(res.state));
+            announceNearest(ctx, latest);
           },
           retryAfterMs: (res) => (res.state === 'fresh' ? null : res.retryAfterMs),
-          onError: () => failures.fail(),
-          onStop: () => ctx.report([]),
+          onError: () => {
+            failures.fail();
+            latest = [];
+            ctx.report([]);
+            setSourceData(ctx.map, pins.reportsSource, EMPTY_COLLECTION);
+            ctx.setStatus({ state: 'error', text: DRIVE_ERROR_TEXT });
+          },
+          onStop: () => {
+            latest = [];
+            ctx.report([]);
+            setSourceData(ctx.map, pins.reportsSource, EMPTY_COLLECTION);
+            ctx.setStatus(null);
+          },
         });
-        return () => poll.stop();
+
+        return () => {
+          clearInterval(speech);
+          poll.stop();
+          closePopup?.();
+          claim();
+        };
       },
     });
 

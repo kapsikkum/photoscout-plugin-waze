@@ -7,12 +7,16 @@ import { REPORT_TYPES, REPORTS_ATTRIBUTION, reportEmoji } from './reports.js';
  * from maplibre-gl, so nothing of it is bundled. Ported from core map/waze.ts and map/policeHeat.ts.
  */
 
-export interface WazeLayerIds {
+/** The report pins' ids: the source, the dot, the emoji labels and the prefix of their icon images. */
+export interface PinLayerIds {
   reportsSource: string;
   reports: string;
   labels: string;
   /** Prefix of the icon images: `<icons><iconType>`. */
   icons: string;
+}
+
+export interface WazeLayerIds extends PinLayerIds {
   heatSource: string;
   heat: string;
 }
@@ -28,9 +32,13 @@ function drawCamera(ctx: CanvasRenderingContext2D): void {
   ctx.beginPath(); ctx.moveTo(32, 42); ctx.lineTo(32, 56); ctx.moveTo(22, 56); ctx.lineTo(42, 56); ctx.stroke();
 }
 
-/** One image per report type, rasterised with local emoji fonts (the basemap's glyph server has no colour emoji). */
+/**
+ * One image per report type, rasterised with local emoji fonts (the basemap's glyph server has no colour emoji).
+ * An image the map already has is kept: images are not removed when a Drive source stops, so a restart skips them.
+ */
 export function addReportIcons(map: MapLibreMap, prefix: string): void {
   for (const type of REPORT_TYPES) {
+    if (map.hasImage(`${prefix}${type}`)) continue;
     const canvas = document.createElement('canvas');
     canvas.width = 64;
     canvas.height = 64;
@@ -66,8 +74,8 @@ export function addHeatLayer(map: MapLibreMap, ids: WazeLayerIds): void {
   });
 }
 
-/** The report pins: a dot and an emoji per report. Clicks are read from the dot (`reports`). */
-export function addReportLayers(map: MapLibreMap, ids: WazeLayerIds): void {
+/** The report pins: a dot and an emoji per report. Clicks are read from the dot (`reports`). Used on the map page and on the Drive map. */
+export function addReportLayers(map: MapLibreMap, ids: PinLayerIds): void {
   map.addSource(ids.reportsSource, { type: 'geojson', data: EMPTY_COLLECTION, attribution: REPORTS_ATTRIBUTION });
   map.addLayer({
     id: ids.reports,

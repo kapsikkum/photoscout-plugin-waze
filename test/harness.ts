@@ -37,7 +37,9 @@ export class FakeRes {
 
 export class FakeRouter {
   readonly routes = new Map<string, Handler>();
+  readonly posts = new Map<string, Handler>();
   get(route: string, handler: Handler): this { this.routes.set(route, handler); return this; }
+  post(route: string, handler: Handler): this { this.posts.set(route, handler); return this; }
 }
 
 export interface ActivateOptions {
@@ -55,7 +57,19 @@ export function fakeContext(opts: ActivateOptions = {}) {
   const ctx = {
     manifest,
     router,
-    auth: { requireUser: () => true, requireAdmin: () => true },
+    // The host's gates, as server/src/auth.ts states them: 401 without a session, 403 unless an admin.
+    auth: {
+      requireUser: (req: { user?: unknown }, res: FakeRes) => {
+        if (req.user) return true;
+        res.status(401).json({ error: 'Sign in required' });
+        return false;
+      },
+      requireAdmin: (req: { user?: { role?: string } | null }, res: FakeRes) => {
+        if (req.user?.role === 'admin') return true;
+        res.status(403).json({ error: 'Admins only' });
+        return false;
+      },
+    },
     settings: {
       get: () => settings,
       onChange: (fn: (s: Record<string, unknown>) => void) => { listeners.push(fn); return () => {}; },
@@ -92,6 +106,16 @@ export async function call(router: FakeRouter, route: string, query: Record<stri
   const res = new FakeRes();
   let error: unknown;
   await handler({ query, user }, res, (err) => { error = err; res.statusCode = 500; });
+  return { status: res.statusCode, json: res.body as Record<string, any>, error };
+}
+
+/** Call a POST route the way Express would: no body is needed by the setup route, and the user is optional. */
+export async function callPost(router: FakeRouter, route: string, user: { role: string } | null = null) {
+  const handler = router.posts.get(route);
+  if (!handler) throw new Error(`no POST route registered for ${route}`);
+  const res = new FakeRes();
+  let error: unknown;
+  await handler({ query: {}, user }, res, (err) => { error = err; res.statusCode = 500; });
   return { status: res.statusCode, json: res.body as Record<string, any>, error };
 }
 

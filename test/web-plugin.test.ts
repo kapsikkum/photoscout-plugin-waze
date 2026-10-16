@@ -2,12 +2,12 @@
 // it asks the plugin's own routes for, what the poll callbacks do, and how the views draw and respond.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { DriveSourceContext, PluginMapClick, RenderFn, SettingsTabProps } from '../src/sdk/web-api.js';
+import type { PluginMapClick, RenderFn, SettingsTabProps } from '../src/sdk/web-api.js';
 import plugin from '../src/web.js';
 import { alertsPath, heatmapPath, statusPath } from '../src/web/query.js';
 import type { WazeAlertsResponse, WazeHeatmapResponse, WazeReport, WazeStatusResponse } from '../src/web/types.js';
 import {
-  buttonNamed, descendants, FakeEl, fakeHost, FakeMap, installFakeDom, PLUGIN_ID, scoped, settle, textOf, type PollRecord,
+  buttonNamed, descendants, FakeEl, fakeDriveContext, fakeHost, FakeMap, installFakeDom, PLUGIN_ID, scoped, settle, textOf, type PollRecord,
 } from './web-harness.js';
 
 const BOX = { minLng: -1, minLat: 50, maxLng: 1, maxLat: 52 };
@@ -101,10 +101,16 @@ test('the heatmap and the pins poll with the view box; Drive polls with navigati
   await pinPoll.options.fetch({ signal: signal(), bounds: BOX });
   assert.equal(rec.requests.at(-1), alertsPath(BOX, 'map'));
 
-  rec.driveSources[0].start({ map: new FakeMap(), position: () => null, report: () => undefined } as unknown as DriveSourceContext);
-  const drivePoll = rec.polls[2];
-  await drivePoll.options.fetch({ signal: signal(), bounds: BOX });
-  assert.equal(rec.requests.at(-1), alertsPath(BOX, 'navigation'));
+  const restore = installFakeDom();
+  try {
+    const stopDrive = rec.driveSources[0].start(fakeDriveContext().ctx) as () => void;
+    const drivePoll = rec.polls[2];
+    await drivePoll.options.fetch({ signal: signal(), bounds: BOX });
+    assert.equal(rec.requests.at(-1), alertsPath(BOX, 'navigation'));
+    stopDrive();
+  } finally {
+    restore();
+  }
 });
 
 test('the view paths are single-slash plugin routes with no .. segment, as the host requires', () => {
@@ -180,21 +186,25 @@ test('a click on a report opens a popup with its title, street, time and source'
 
 test('Drive is told about the recent police and hazard reports, and is cleared when the drive ends', async () => {
   const { rec, body } = activated();
-  const told: unknown[][] = [];
-  const ctx = { map: new FakeMap(), position: () => null, report: (alerts: unknown[]) => { told.push(alerts); } };
-  const stop = rec.driveSources[0].start(ctx as unknown as DriveSourceContext) as () => void;
-  const drivePoll = rec.polls[2];
-  body.alerts.alerts.push(report('jam', 'JAM'));
-  drivePoll.options.onData(body.alerts);
-  const shown = told.at(-1) as Array<{ id: string; detail?: string }>;
-  assert.deepEqual(shown.map((a) => a.id), ['p1', 'h1'], 'the jam is map-only');
-  assert.equal(shown[0].detail, 'George St');
-  body.alerts.alerts.pop();
+  const restore = installFakeDom();
+  try {
+    const drive = fakeDriveContext();
+    const stop = rec.driveSources[0].start(drive.ctx) as () => void;
+    const drivePoll = rec.polls[2];
+    body.alerts.alerts.push(report('jam', 'JAM'));
+    drivePoll.options.onData(body.alerts);
+    const shown = drive.reports.at(-1) as Array<{ id: string; detail?: string }>;
+    assert.deepEqual(shown.map((a) => a.id), ['p1', 'h1'], 'the jam is map-only');
+    assert.equal(shown[0].detail, 'George St');
+    body.alerts.alerts.pop();
 
-  stop();
-  assert.equal(drivePoll.stopped, true);
-  drivePoll.options.onStop?.();
-  assert.deepEqual(told.at(-1), [], 'the drive ends with nothing to warn about');
+    stop();
+    assert.equal(drivePoll.stopped, true);
+    drivePoll.options.onStop?.();
+    assert.deepEqual(drive.reports.at(-1), [], 'the drive ends with nothing to warn about');
+  } finally {
+    restore();
+  }
 });
 
 test('the Settings tab is open to visitors, and shows the first-run instructions to admins only', async () => {

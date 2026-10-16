@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { PluginContext, ServerPlugin } from './sdk/server-api.js';
 import {
   createScanCache, declaredHarvesterHosts, fetchWazeAlerts, fetchWazeAlertsCached, fetchWazeWorkerHealth,
@@ -5,6 +6,7 @@ import {
   type Harvester, type WazeBoundingBox, type WazeFetchResult, type WazePriority,
 } from './feed.js';
 import { coreWazeDir, presentWazeSetup, readMigratedRuntime, readSetupFile } from './setup.js';
+import { SetupStarter, setupHelperPath } from './setupStart.js';
 import { openSightings, prunePoliceSightings, queryPoliceHeatmap, recordPoliceSightings, SIGHTING_RETENTION_MS } from './sightings.js';
 
 /** Prune old sightings at most this often, as the core app does on its alerts route. */
@@ -36,6 +38,8 @@ const plugin: ServerPlugin = {
     const declared = declaredHarvesterHosts(ctx.manifest.permissions);
     const wazeDir = coreWazeDir(ctx.dataDir);
     const cache = createScanCache();
+    // The core app's data root is three levels above the plugin's data folder (see coreWazeDir).
+    const setup = new SetupStarter({ wazeDir, dataRoot: path.resolve(ctx.dataDir, '..', '..', '..'), helper: () => setupHelperPath() });
 
     /**
      * The harvester the settings name, or why there is none. The core app's runtime file is used only
@@ -100,6 +104,20 @@ const plugin: ServerPlugin = {
         attribution: 'Waze / Google',
         setup: presentWazeSetup(readSetupFile(wazeDir), probe.current(), { admin: viewer(req).admin }),
       });
+    });
+
+    // POST /api/plugins/map.24thframe.waze/setup: core's POST /api/waze/setup. Admins only (the host's requireAdmin
+    // answers 403 "Admins only" to anyone else). Starts the setup helper once at a time and answers 202 with the
+    // setup state, which carries no operator instructions (core's startWazeSetup answers the same way).
+    ctx.router.post('/setup', (req, res) => {
+      if (!ctx.auth.requireAdmin(req, res)) return;
+      try {
+        probe.refresh(harvesterNow().harvester !== null);
+        setup.start();
+        res.status(202).json(presentWazeSetup(readSetupFile(wazeDir), probe.current()));
+      } catch (err) {
+        res.status(503).json({ error: err instanceof Error ? err.message : 'Setup could not start' });
+      }
     });
 
     // GET /api/plugins/map.24thframe.waze/alerts?minLng=&minLat=&maxLng=&maxLat=[&priority=navigation]

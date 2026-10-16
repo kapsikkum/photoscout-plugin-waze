@@ -1,6 +1,8 @@
+import type { Map as MapLibreMap } from 'maplibre-gl';
+import type { LngLat } from '../sdk/web-api.js';
 import { HEAT_WINDOWS, type HeatWindowStore } from './heat.js';
 import { coverageNote, connectionText, setupNeedsPolling, type ActivityLevel } from './status.js';
-import type { WazeStatusResponse } from './types.js';
+import type { WazeSetupView, WazeStatusResponse } from './types.js';
 
 /**
  * The plugin's DOM: the heatmap window selector (the map corner and the Settings tab), the report popup
@@ -51,9 +53,46 @@ export function reportPopupElement(title: string, lines: readonly string[]): HTM
   return h('div', {}, h('strong', { text: title }), ...lines.map((text) => h('p', { text })));
 }
 
+const TAP_POPUP_STYLE = [
+  'position:absolute', 'transform:translate(-50%,calc(-100% - 14px))', 'z-index:3', 'max-width:240px',
+  'background:#fff', 'color:#172b49', 'border-radius:8px', 'box-shadow:0 2px 8px rgba(0,0,0,.3)',
+  'padding:8px 28px 8px 10px', 'font:13px/1.35 system-ui,sans-serif', 'pointer-events:auto',
+].join(';');
+
+/**
+ * A popup on the Drive map. The host's showPopup attaches only to the map page, so a Drive pin is answered
+ * here: a box placed over the map at the point, that follows the map and closes on a click on the map or
+ * its close button. Returns the function that removes it.
+ */
+export function showTapPopup(map: MapLibreMap, at: LngLat, content: HTMLElement): () => void {
+  const box = h('div', {});
+  box.style.cssText = TAP_POPUP_STYLE;
+  const close = h('button', { type: 'button', 'aria-label': 'Close', text: '×' });
+  close.style.cssText = 'position:absolute;top:2px;right:4px;border:0;background:none;font-size:18px;line-height:1;cursor:pointer;color:inherit;';
+  box.append(content, close);
+  const place = (): void => {
+    const p = map.project(at);
+    box.style.left = `${p.x}px`;
+    box.style.top = `${p.y}px`;
+  };
+  const remove = (): void => {
+    map.off('move', place);
+    map.off('click', remove);
+    box.remove();
+  };
+  close.addEventListener('click', remove);
+  map.on('move', place);
+  map.on('click', remove);
+  map.getContainer().append(box);
+  place();
+  return remove;
+}
+
 export interface StatusSettingsDeps {
   isAdmin: boolean;
   fetchStatus(check: boolean): Promise<WazeStatusResponse>;
+  /** Start the harvester's setup (POST /setup). Rejects with the server's message when it cannot start. */
+  startSetup(): Promise<WazeSetupView>;
   activity(message: string, level: ActivityLevel): void;
   windowStore: HeatWindowStore;
 }
@@ -66,9 +105,23 @@ export interface StatusSettingsDeps {
 export function renderStatusSettings(el: HTMLElement, deps: StatusSettingsDeps): () => void {
   let status: WazeStatusResponse | null = null;
   let busy = true;
+  let starting = false;
   let error: string | null = null;
   let alive = true;
   let timer: ReturnType<typeof setInterval> | undefined;
+
+  // Admins only, as core's "Set up reports" card: the button is off while the helper is working.
+  const setupBox = h('div', { class: 'waze-status-card' });
+  const setupButton = h('button', { type: 'button', text: 'Set up Waze reports' });
+  setupButton.addEventListener('click', () => void startSetup());
+  const setupLine = h('p', { class: 'status-line', role: 'status' });
+  setupBox.replaceChildren(
+    h('h3', { text: 'Set up reports' }),
+    h('p', { class: 'hint', text: 'Uses an Android test device already connected to this computer, or starts one in Docker. Setup installs Waze, connects the reports and saves the connection. The first start can take 15–30 minutes.' }),
+    setupButton,
+    setupLine,
+  );
+  setupBox.hidden = !deps.isAdmin;
 
   const statusBox = h('div', { class: 'waze-status-card' });
   const firstRunBox = h('div', { class: 'waze-status-card' });
@@ -92,11 +145,18 @@ export function renderStatusSettings(el: HTMLElement, deps: StatusSettingsDeps):
     }
     const note = coverageNote(status.coverage);
     if (note) out.push(h('p', { class: 'hint', text: note }));
-    if (deps.isAdmin && status.setup.message) out.push(h('p', { class: 'hint', text: `Setup: ${status.setup.message}` }));
     return out;
   }
 
   function paint(): void {
+    const setupState = status?.setup.state;
+    const working = starting || setupState === 'installing' || setupState === 'starting';
+    setupButton.disabled = working;
+    setupButton.textContent = working ? 'Setting up…' : 'Set up Waze reports';
+    const tone = setupState === 'failed' ? 'error' : setupState === 'ready' ? 'ok' : '';
+    setupLine.setAttribute('class', tone ? `status-line ${tone}` : 'status-line');
+    setupLine.textContent = status?.setup.message ?? '';
+    setupLine.hidden = !status?.setup.message;
     statusBox.replaceChildren(...statusChildren());
     // The instructions are written only for an admin: a visitor's page never holds them, even hidden.
     const firstRun = deps.isAdmin && status?.setup.state === 'needs_first_run';
@@ -146,11 +206,30 @@ export function renderStatusSettings(el: HTMLElement, deps: StatusSettingsDeps):
     keepPolling();
   }
 
+  /** Ask the server to start the setup, then read the status again (core's Settings button does the same). */
+  async function startSetup(): Promise<void> {
+    if (!alive || starting) return;
+    starting = true;
+    error = null;
+    paint();
+    try {
+      await deps.startSetup();
+    } catch (err) {
+      starting = false;
+      error = err instanceof Error ? err.message : 'Setup failed';
+      if (alive) paint();
+      return;
+    }
+    starting = false;
+    await load(false);
+  }
+
   el.replaceChildren(
     h('section', {},
       h('h2', { text: '👮 Police & hazards' }),
       h('p', { class: 'hint', text: 'Community reports from Waze: police, crashes, hazards and roadworks. They show on the map when you turn them on, and Drive warns you about nearby ones.' }),
       errorLine,
+      setupBox,
       firstRunBox,
       statusBox,
       testButton,

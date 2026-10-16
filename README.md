@@ -32,6 +32,20 @@ the core app. It uses only the types of maplibre-gl and geojson, and bundles to 
 If the address is left empty, the plugin reads the core app's `data/waze/runtime.json` (read only) as a
 fallback for an install that predates the plugin. The plugin never writes that file.
 
+## Setup from Settings
+
+An admin's **Set up Waze reports** button posts to `POST /setup`, which starts the same helper the core app
+runs, `scripts/setup-waze.mjs`, with the same state in `<DATA>/waze/setup.json`. The helper ships in the
+PhotoScout checkout, not in this zip, so the plugin runs it from there:
+
+- by default, the checkout the server was started from (`scripts/setup-waze.mjs`, two folders above the
+  server's entry file, as core computes its own root);
+- or the path in `WAZE_SETUP_HELPER`, when the server runs from somewhere else.
+
+With neither, the button answers "This installation does not include the Waze setup helper", as core does.
+The `POST` answers 202 with the setup state and 503 with the reason; it is refused with 403 to anyone who is
+not an admin.
+
 ## Network permissions
 
 The plugin reaches only these three hosts, each an exact host and port:
@@ -65,8 +79,8 @@ npm install
 npm run check        # typecheck, tests, then the build
 ```
 
-`npm run build` writes `dist/map.24thframe.waze-1.0.0.zip`, which holds `plugin.json` and `server.js` and
-nothing else. The tests include a check with PhotoScout's own validator when a PhotoScout checkout is
+`npm run build` writes `dist/map.24thframe.waze-1.0.0.zip`, which holds `plugin.json`, `server.js` and `web.js`
+and nothing else. The tests include a check with PhotoScout's own validator when a PhotoScout checkout is
 beside this repo (or `PHOTOSCOUT_CLI` names its `scripts/plugin.mjs`):
 
 ```sh
@@ -87,8 +101,9 @@ the harvester address and key on the plugin's settings page.
 | `src/feed.ts` | harvester address rules, alert and health fetches, the 60 s scan cache |
 | `src/sightings.ts` | the police sightings table, the heatmap query, pruning |
 | `src/setup.ts` | the setup view for Settings, and the core runtime-file fallback |
+| `src/setupStart.ts` | starting the core setup helper for `POST /setup`, once at a time |
 | `src/web.ts` | the web half: legend toggles, map layers, popup, heatmap corner, Settings tab, Drive source |
-| `src/web/` | the web half's helpers: report and heatmap wording, the status text, the DOM views |
+| `src/web/` | the web half's helpers: report and heatmap wording, the status text, the DOM views, the Drive rules (`drive.ts`) |
 | `src/sdk/server-api.ts` | a copy of PhotoScout's server plugin types (see below) |
 | `src/sdk/web-api.ts` | a copy of PhotoScout's web plugin API (see below) |
 | `build.mjs` | bundles `src/server.ts` to `server.js` and `src/web.ts` to `web.js`, and writes the zip |
@@ -103,11 +118,13 @@ Its `maplibre-gl`, `geojson` and `react` imports are type-only and are dev depen
 
 ## Not done yet
 
-- **Drive is partial.** The web API's Drive source gets the nearest report within 800 m, straight line. The
-  core app also filters to the route ahead, speaks the warning, and has an on/off button and status hints.
-  None of those are in the web API yet, so they stay in the core app until the API grows.
-- **Setup from the plugin.** The plugin reports setup but cannot start it. The Settings setup button and
-  `POST /setup` stay in the core app until the core Waze code is removed.
+- **Drive, with the 1.1.0 API.** The banner uses the route ahead (`filter: 'route-ahead'`), the warning is
+  spoken with `speak` and keyed by report, the status line follows the feed, the on/off button defaults to on,
+  and the pins run while planning (`runs: 'always'`). Differences from core are listed in the report that
+  accompanied this change; the main one is that a Drive pin's popup is drawn by the plugin, because the host's
+  `showPopup` attaches only to the map page.
+- **Setup from the plugin** runs the core helper from the checkout (see "Setup from Settings"). It does not
+  run from the plugin zip, so an install that keeps the helper elsewhere must set `WAZE_SETUP_HELPER`.
 - **The signed-in user.** `/alerts` and `/status` read `req.user` to tell a visitor from a member and an
   admin, because the plugin contract has no helper for that yet. A visitor is treated as the less
   privileged case.
