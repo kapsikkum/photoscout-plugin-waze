@@ -7,10 +7,9 @@ import {
 } from './feed.js';
 import { coreWazeDir, presentWazeSetup, readMigratedRuntime, readSetupFile } from './setup.js';
 import { SetupStarter, setupHelperPath } from './setupStart.js';
-import { openSightings, prunePoliceSightings, queryPoliceHeatmap, recordPoliceSightings, SIGHTING_RETENTION_MS } from './sightings.js';
+import { openSightings, queryPoliceHeatmap, SightingKeeper, SIGHTING_RETENTION_MS } from './sightings.js';
+import { AreaMonitor, monitorSettingsOf, MONITOR_TASK_ID } from './monitor.js';
 
-/** Prune old sightings at most this often, as the core app does on its alerts route. */
-const PRUNE_EVERY_MS = 60000;
 const HEATMAP_DEFAULT_MS = 2 * 60 * 60 * 1000;
 const HEATMAP_MIN_MS = 60 * 60 * 1000;
 const COORDS = ['minLng', 'minLat', 'maxLng', 'maxLat'] as const;
@@ -32,6 +31,9 @@ function parseBox(query: Record<string, unknown>): WazeBoundingBox | 'missing' |
   try { validateWazeBounds(bbox); } catch { return 'invalid'; }
   return bbox;
 }
+
+/** Stops the area monitor of the activation the host is stopping. The host loads a fresh copy of this module per activation. */
+let stopMonitor: (() => void) | null = null;
 
 const plugin: ServerPlugin = {
   activate(ctx: PluginContext) {
@@ -61,11 +63,49 @@ const plugin: ServerPlugin = {
       return harvester ? fetchWazeWorkerHealth(harvester, ctx.fetch) : Promise.resolve(null);
     });
 
-    // A changed address or key must not be answered from scans of the old harvester.
-    ctx.settings.onChange(() => { cache.clear(); probe.reset(); });
-
     openSightings(ctx.db);
-    let lastPrune = 0;
+    const keeper = new SightingKeeper(ctx.db);
+    const monitor = new AreaMonitor({ keeper, cache, fetchFn: ctx.fetch, harvester: harvesterNow });
+    stopMonitor = () => monitor.stop();
+
+    /**
+     * The scheduled poll. The host reads a task's interval once, when the task is registered, so the task is
+     * registered when the first area is set and keeps that interval until the plugin next starts. The areas are
+     * read again on every run, so changing them takes effect at the next run.
+     */
+    let scheduledMinutes: number | null = null;
+    const scheduleMonitor = (settings: Record<string, unknown>): void => {
+      const { areas, problems, intervalMinutes } = monitorSettingsOf(settings);
+      for (const problem of problems) ctx.log.warn(`Monitored areas: ${problem}. It is ignored.`);
+      if (scheduledMinutes !== null) {
+        if (intervalMinutes !== scheduledMinutes) {
+          ctx.log.info(`Area monitoring keeps its ${scheduledMinutes}-minute schedule until the plugin restarts; ${intervalMinutes} minutes applies then`);
+        }
+        return;
+      }
+      if (areas.length === 0) return;
+      try {
+        ctx.tasks.register({
+          id: MONITOR_TASK_ID,
+          name: 'Police reports for monitored areas',
+          description: 'Polls the areas set in Settings and records police sightings for the heatmap.',
+          intervalMinutes,
+          run: async (log) => {
+            const current = monitorSettingsOf(ctx.settings.get());
+            for (const problem of current.problems) log(`Ignored: ${problem}`);
+            return monitor.poll(current.areas, log);
+          },
+        });
+        scheduledMinutes = intervalMinutes;
+        ctx.log.info(`Polling ${areas.length} monitored area${areas.length === 1 ? '' : 's'} every ${intervalMinutes} minutes`);
+      } catch (err) {
+        ctx.log.error(`Area monitoring could not be scheduled: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    scheduleMonitor(ctx.settings.get());
+
+    // A changed address or key must not be answered from scans of the old harvester.
+    ctx.settings.onChange((settings) => { cache.clear(); probe.reset(); scheduleMonitor(settings); });
 
     // GET /api/plugins/map.24thframe.waze/status[?check=1]
     ctx.router.get('/status', async (req, res) => {
@@ -141,14 +181,7 @@ const plugin: ServerPlugin = {
         }
 
         // Only fresh harvester data is recorded: a cache hit would count the same reports again.
-        if (!result.fromCache && (result.state === 'fresh' || result.state === 'stale')) {
-          const now = Date.now();
-          recordPoliceSightings(ctx.db, result.alerts.filter(alert => alert.type === 'POLICE'), now);
-          if (now - lastPrune >= PRUNE_EVERY_MS) {
-            lastPrune = now;
-            prunePoliceSightings(ctx.db, now, SIGHTING_RETENTION_MS);
-          }
-        }
+        keeper.keep(result, result.fromCache, Date.now());
         res.json({ configured: true, ...result });
       } catch (err) {
         next(err);
@@ -177,6 +210,12 @@ const plugin: ServerPlugin = {
     });
 
     ctx.log.info('Waze police and hazard reports are ready');
+  },
+
+  /** The host unregisters the monitor task itself; this stops a poll that is still running from recording more. */
+  deactivate() {
+    stopMonitor?.();
+    stopMonitor = null;
   },
 };
 

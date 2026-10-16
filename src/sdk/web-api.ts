@@ -1,15 +1,14 @@
-// Vendored copy of web/src/plugins/api.ts from PhotoScout (the web plugin contract, WEB_API_VERSION 1.1.0).
-// A copy pending the @photoscout/plugin-sdk package: the types and the definePlugin helper only. Do not edit
-// it here; re-copy it from the PhotoScout repository when the web API changes.
+// Vendored from @photoscout/plugin-sdk 2.0.0 (src/web.ts). Do not edit: re-copy with plugin.mjs sdk-check --write.
 /**
  * The PhotoScout web plugin API: the contract between the SPA ("the host") and
  * the web bundle of a plugin.
  *
  * THIS FILE IS DOCUMENTATION AS MUCH AS CODE. It is self-contained on purpose:
  * it imports only the *types* of maplibre-gl, react and geojson, and has no
- * runtime dependencies on the app, so it can move into the
- * `@photoscout/plugin-sdk` package later without edits. A plugin bundle should
- * `import type` from here (or from the SDK) and import nothing else from the app.
+ * runtime dependencies on the app. It is the canonical source of the contract,
+ * in `@photoscout/plugin-sdk/web`; the app re-exports it from
+ * web/src/plugins/api.ts. A plugin bundle should import from the SDK (or from
+ * its vendored copy) and nothing else from the app.
  *
  * ## What a web bundle is
  *
@@ -65,8 +64,14 @@ import type { Feature } from 'geojson';
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type * as React from 'react';
 
-/** The web API version this file describes. Semver: a minor adds, a major breaks. */
-export const WEB_API_VERSION = '1.1.0';
+/**
+ * The web API version this file describes, reported to bundles as `host.apiVersion`.
+ * Semver: a minor adds, a major breaks. It moves on its own: the server's HOST_API_VERSION
+ * (what a manifest's `photoscout` range is checked against) covers the server contract and
+ * the manifest, and the two are bumped independently. A bundle that needs a feature should
+ * check `host.apiVersion`. The manifest cannot state a web range. See docs/plugins/web-api-design.md, "Versions".
+ */
+export const WEB_API_VERSION = '2.0.0';
 
 /** Stops a subscription or removes a contribution. Safe to call twice. */
 export type Unsubscribe = () => void;
@@ -280,8 +285,8 @@ export interface SidePanelHandle<T> {
 
 export interface PanelApi {
   /**
-   * A small widget stacked in the map's bottom-right corner (like the police
-   * heatmap's time-window control). Shown on the map page while its legend entry is on.
+   * A small widget stacked in the map's bottom-right corner (like a time-window
+   * picker). Shown on the map page while its legend entry is on.
    */
   addCorner(def: CornerPanelDef): Unsubscribe;
   /**
@@ -321,6 +326,16 @@ export interface DriveStatus {
   text: string;
 }
 
+/** The car's latest GPS fix, as the Drive screen holds it. */
+export interface DriveFix {
+  /** `[lng, lat]` of the fix. */
+  point: LngLat;
+  /** Metres: the radius the device is 68% sure it is within. Smaller is better. */
+  accuracyM: number;
+  /** Milliseconds since the device reported the fix, measured when `fix()` is called. */
+  ageMs: number;
+}
+
 export interface DriveSpeakOptions {
   /**
    * Speak each key once per drive. Call again with the same key on every poll and
@@ -329,28 +344,64 @@ export interface DriveSpeakOptions {
   key?: string;
 }
 
-export interface RouteAheadOptions {
-  /** How far along the route ahead still counts, in metres. Default 1500. */
-  aheadM?: number;
-  /** How far the point may sit from the road line, in metres. Default 45. */
-  offRoadM?: number;
-}
+/**
+ * Why `speak()` said nothing. The host checks in this order:
+ *
+ * - `stopped`: the source has stopped (its drive ended, or the driver turned it off).
+ * - `not-driving`: no drive is on.
+ * - `duplicate`: this `key` was already said this drive.
+ * - `voice-off`: the Voice button is off, or the browser cannot speak.
+ * - `no-fix`: there is no GPS fix yet.
+ * - `stale`: the fix is older than `tuning.speakMaxAgeMs`.
+ * - `inaccurate`: the fix is looser than `tuning.speakMaxAccuracyM`.
+ */
+export type SpeakRefusal = 'stopped' | 'not-driving' | 'duplicate' | 'voice-off' | 'no-fix' | 'stale' | 'inaccurate';
+
+/** What `speak()` returns. It is always an object, so test `spoken`; a bare truthiness check is always true. */
+export type SpeakResult = { spoken: true } | { spoken: false; reason: SpeakRefusal };
 
 /**
- * Which reported alerts reach the banner. `nearby`: within 800 m of the car in a
- * straight line (the original behaviour). `route-ahead`: only the alerts that
- * `ctx.routeAhead` accepts, nearest along the route; nothing without a route.
+ * How the host judges a source's alerts and speech. Every option is optional, and each
+ * default is the host's own rule, so a source that sets none gets the standard Drive
+ * behaviour. An option name not listed here, or a value outside its range, makes
+ * `addAlertSource` throw.
+ */
+export interface DriveTuning {
+  /** `'nearby'` alerts: the banner shows one only within this many metres of the car, in a straight line. Default 800. Range 1–10 000. */
+  nearbyM?: number;
+  /** The car must be within this many metres of the route for `routeAhead()` to answer, and for a `'route-ahead'` alert to reach the banner. Default 100. Range 1–1 000. */
+  onRouteM?: number;
+  /** How far along the route ahead an alert still counts, in metres. Default 1500. Range 1–20 000. */
+  aheadM?: number;
+  /** How far a point may sit from the road line and still count as on it, in metres. Default 45. Range 1–500. */
+  offRoadM?: number;
+  /** `speak()`: the oldest GPS fix that may speak, in milliseconds. Default 10 000. Range 1 000–60 000. */
+  speakMaxAgeMs?: number;
+  /** `speak()`: the loosest GPS fix that may speak, as accuracy in metres. Default 75. Range 1–500. */
+  speakMaxAccuracyM?: number;
+}
+
+/** An image for `addImage`: anything maplibre's `Map.addImage` takes, metadata included (pixelRatio, sdf, stretch). */
+export type DriveImage = Parameters<MapLibreMap['addImage']>[1];
+
+/**
+ * Which reported alerts reach the banner. `nearby`: within `tuning.nearbyM` of the car in a
+ * straight line (the original behaviour). `route-ahead`: only the alerts `routeAhead()` accepts,
+ * nearest along the route; nothing without a route.
  */
 export type DriveAlertFilter = 'nearby' | 'route-ahead';
 
 export interface DriveSourceContext {
   /**
-   * The Drive screen's map, already loaded. Add layers and sources only with ids
-   * from `scopedId`, and declare the layers with `mapLayers`.
+   * The Drive screen's map, already loaded. Add layers and sources only with ids from
+   * `scopedId`, images only through `addImage`, and declare pins with `mapLayers`.
    */
   map: MapLibreMap;
-  /** The car's latest position, or null before the first GPS fix. */
-  position(): LngLat | null;
+  /**
+   * The car's latest GPS fix, or null before the first. It carries the accuracy and the age,
+   * so a source can make its own staleness calls.
+   */
+  fix(): DriveFix | null;
   /**
    * The route being followed: the `[lng, lat]` line the Drive screen draws, from the
    * start to the destination, or null when no navigation is under way. It changes on
@@ -366,32 +417,46 @@ export interface DriveSourceContext {
   /**
    * Metres along the route from the car to `point`, when `point` is on the road ahead;
    * otherwise null. Null when there is no route or no fix, when the car is more than
-   * 100 m from the route, when `point` is behind the car, more than `aheadM` ahead, or
-   * more than `offRoadM` from the road. These are core Waze's rules, with its defaults.
+   * `tuning.onRouteM` from the route, when `point` is behind the car, more than
+   * `tuning.aheadM` ahead, or more than `tuning.offRoadM` from the road.
    */
-  routeAhead(point: LngLat, opts?: RouteAheadOptions): number | null;
+  routeAhead(point: LngLat): number | null;
   /** Replace this source's alerts. Call whenever your data changes; `[]` clears. */
   report(alerts: readonly DriveAlert[]): void;
   /** Show a status line under the banner while the source is on. `null` clears it. */
   setStatus(status: DriveStatus | null): void;
   /**
-   * Say `text` in the Drive voice. Returns true if it was spoken. Nothing is said when
-   * no drive is on, the voice is muted or the browser cannot speak, when `opts.key` was
-   * already spoken this drive, or when the GPS fix is more than 10 s old or worse than
-   * 75 m (core's rule for report warnings). A new prompt cuts off one still being read.
+   * Say `text` in the Drive voice. Returns `{ spoken: true }`, or `{ spoken: false, reason }`
+   * when nothing was said (see `SpeakRefusal`). A new prompt cuts off one still being read.
+   * The host gates it with the Voice button, the GPS fix (at most `tuning.speakMaxAgeMs` old
+   * and at most `tuning.speakMaxAccuracyM` loose) and `opts.key`, which is said once per drive.
    * What to say, and when, is the source's call: the host only gates and dedupes.
    */
-  speak(text: string, opts?: DriveSpeakOptions): boolean;
+  speak(text: string, opts?: DriveSpeakOptions): SpeakResult;
   /**
-   * An id for a layer or source on the Drive map: `<pluginId>:<sourceId>:<name>`. The
-   * host removes every layer and source with that prefix when the source stops (the
-   * drive ends, or the driver turns the source off). Images are not removed.
+   * Add an image to the Drive map's style under `scopedId(name)`, and return that id for use
+   * as an `icon-image`. Adding a name again replaces the image. The image is removed when the
+   * source stops, or by `removeImage`.
+   */
+  addImage(name: string, image: DriveImage): string;
+  /** Remove an image this source added. Images are removed for you when the source stops. */
+  removeImage(name: string): void;
+  /**
+   * Show a popup on the Drive map, as `host.map.showPopup` does on the main map. A string is
+   * shown as text, never as HTML. One popup per source: showing another closes the first. A
+   * click on the map closes it too, and so does the source stopping.
+   */
+  showPopup(at: LngLat, content: string | HTMLElement): PopupHandle;
+  /**
+   * An id for a layer or source on the Drive map: `<pluginId>:<sourceId>:<name>`. The host
+   * removes every layer, source and image with that prefix when the source stops (the drive
+   * ends, or the driver turns the source off).
    */
   scopedId(name: string): string;
   /**
    * Declare layers you added to `map` for this source (your report pins). A tap that
    * lands on one of them goes to `onTap` and never picks a destination on the Drive
-   * screen, as the core Waze pins do. The layers are removed when the source stops.
+   * screen. The layers are removed when the source stops.
    * Each call declares more layers; the returned function stops the tap ownership
    * only (the layers stay until the source stops).
    */
@@ -409,12 +474,14 @@ export interface DriveAlertSourceDef {
   /** Which of its alerts reach the banner. Default `'nearby'`. */
   filter?: DriveAlertFilter;
   /**
-   * When the source runs. `'drive'` (default): only while a drive is on, as core's
-   * warnings do. `'always'`: from the moment the Drive screen has its map, so its pins
-   * and status line show while the driver is planning, as core Waze's pins do. Its
+   * When the source runs. `'drive'` (default): only while a drive is on.
+   * `'always'`: from the moment the Drive screen has its map, so its pins
+   * and status line show while the driver is planning. Its
    * banner alerts show, and `speak` says nothing, only while a drive is on.
    */
   runs?: 'drive' | 'always';
+  /** The host's rules for this source's banner and speech. See `DriveTuning`. */
+  tuning?: DriveTuning;
   /**
    * Start feeding alerts. Return a cleanup. The host starts the source as `runs` says
    * and while it is on; it runs the cleanup when the source stops (the drive ends, the
@@ -428,17 +495,17 @@ export interface DriveApi {
   /**
    * Feed the Drive screen: alerts for the banner, a status line, spoken warnings, an
    * on/off button and pins on the Drive map. Each source receives a `DriveSourceContext`
-   * (see it for every member). Wired since 1.1.0:
+   * (see it for every member):
    *
-   * - Banner: the nearest alert that passes the source's `filter`.
+   * - Banner: the nearest alert that passes the source's `filter`, judged by its `tuning`.
    * - Route and heading: `route()`, `heading()` and `routeAhead()`.
    * - Voice: `speak()`, which the Drive Voice button mutes.
    * - On/off: a button per source, `defaultOn` at the start, like "Reports on/off".
    * - Status: `setStatus()`, shown under the banner.
-   * - Map: `map`, `scopedId()` and `mapLayers()` (taps on your pins are yours).
+   * - Map: `map`, `scopedId()`, `addImage()`, `mapLayers()` (taps on your pins are yours) and `showPopup()`.
    *
-   * Without the new members a source behaves as it did in 1.0: the nearest alert
-   * within 800 m of the car is shown.
+   * A source that sets no `tuning` gets the host's own rules: the nearest alert within
+   * 800 m of the car is shown, and speech needs a fix at most 10 s old and 75 m loose.
    */
   addAlertSource(def: DriveAlertSourceDef): Unsubscribe;
 }
@@ -489,7 +556,7 @@ export interface PollHandle {
 }
 
 /**
- * The cadence matches the core Waze feed: the first poll runs at once; then every
+ * The cadence: the first poll runs at once; then every
  * `intervalMs`; never while the tab is hidden; at most one request per 5 s; a newer
  * request aborts the one in flight and its answer is dropped if it arrives late.
  */

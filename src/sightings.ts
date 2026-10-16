@@ -70,3 +70,35 @@ export function queryPoliceHeatmap(db: DatabaseSync, bbox: { minLng: number; min
 export function prunePoliceSightings(db: DatabaseSync, now: number, maxMs: number): number {
   return Number(db.prepare('DELETE FROM waze_police_sightings WHERE last_seen < ?').run(now - maxMs).changes);
 }
+
+/** Prune old rows at most this often, as the core app does on its alerts route. */
+export const PRUNE_EVERY_MS = 60000;
+
+/**
+ * Keeps the police reports of harvester answers and prunes old rows, at most once a minute. The alerts
+ * route and the area monitor both keep their answers through one keeper, so they share the prune throttle.
+ */
+export class SightingKeeper {
+  private lastPrune = 0;
+
+  constructor(private readonly db: DatabaseSync) {}
+
+  /**
+   * Keep an answer that is fresh or stale. A cache hit is not kept: the scan it came from was kept when it was
+   * fresh, and keeping it again would count the same reports twice. Returns how many police reports were recorded.
+   */
+  keep(
+    answer: { alerts: readonly { type: string; id: string; point: [number, number]; subType?: string; thumbsUp?: number }[]; state: string },
+    fromCache: boolean,
+    now: number,
+  ): number {
+    if (fromCache || (answer.state !== 'fresh' && answer.state !== 'stale')) return 0;
+    const police = answer.alerts.filter(alert => alert.type === 'POLICE');
+    recordPoliceSightings(this.db, police, now);
+    if (now - this.lastPrune >= PRUNE_EVERY_MS) {
+      this.lastPrune = now;
+      prunePoliceSightings(this.db, now, SIGHTING_RETENTION_MS);
+    }
+    return police.length;
+  }
+}

@@ -1,13 +1,18 @@
-import type { DriveAlert, DriveStatus, DriveSourceContext, LngLat } from '../sdk/web-api.js';
+import type { DriveAlert, DriveStatus, DriveSourceContext, LngLat, SpeakResult } from '../sdk/web-api.js';
 import type { ReportState } from './types.js';
 
 /**
  * The Drive source's pure rules, ported from the core app's Drive screen (pages/Drive.tsx, drive/format.ts and
  * drive/reports.ts). The host does the geometry (`ctx.routeAhead`), the voice gate and the once-per-drive
- * de-duplication (`ctx.speak`); this module decides what the report warnings say and when they are asked for.
+ * de-duplication (`ctx.speak`, which answers a SpeakResult); this module decides what the report warnings say
+ * and when they are asked for.
  */
 
-/** Core speaks a warning only for the nearest report that is this close along the route. */
+/**
+ * Core speaks a warning only for the nearest report that is this close along the route. This is the plugin's
+ * own policy: the host's speech gates are the fix's age and accuracy (tuning.speakMaxAgeMs, speakMaxAccuracyM),
+ * not a distance along the route, so it stays here.
+ */
 export const SPEAK_WITHIN_M = 800;
 
 /** Core's status tick: the Drive screen re-reads the car's place every two seconds. */
@@ -57,10 +62,11 @@ export function nearestAhead(alerts: readonly DriveAlert[], routeAhead: (point: 
 /**
  * Speak the nearest warning, as core does: "Police reported ahead, in 400 m.", only when it is within
  * SPEAK_WITHIN_M and keyed by the alert, so the host says it once per drive. Only the nearest is ever
- * spoken, so a second report waits its turn. Returns whether the host said it.
+ * spoken, so a second report waits its turn. Returns the host's answer to `speak` (test its `spoken`), or
+ * null when no report is near enough to be a warning at all.
  */
-export function announceNearest(ctx: Pick<DriveSourceContext, 'routeAhead' | 'speak'>, alerts: readonly DriveAlert[]): boolean {
+export function announceNearest(ctx: Pick<DriveSourceContext, 'routeAhead' | 'speak'>, alerts: readonly DriveAlert[]): SpeakResult | null {
   const near = nearestAhead(alerts, (point) => ctx.routeAhead(point));
-  if (!near || near.distanceM > SPEAK_WITHIN_M) return false;
+  if (!near || near.distanceM > SPEAK_WITHIN_M) return null;
   return ctx.speak(`${near.alert.title} ahead, in ${formatDistance(near.distanceM)}.`, { key: near.alert.id });
 }

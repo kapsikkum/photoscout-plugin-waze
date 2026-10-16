@@ -1,17 +1,22 @@
-// Vendored copy of server/src/plugins/types.ts from PhotoScout (the server plugin contract, host API 1.0.0).
-// A copy pending the @photoscout/plugin-sdk package: types only. Do not edit it here; re-copy it from the
-// PhotoScout repository when the host API changes.
+// Vendored from @photoscout/plugin-sdk 2.0.0 (src/server.ts). Do not edit: re-copy with plugin.mjs sdk-check --write.
 import type { Request, Response as ExpressResponse, Router } from 'express';
 import type { DatabaseSync } from 'node:sqlite';
 
 /**
- * The public plugin API. Self-contained on purpose: this file is meant to move
- * into the @photoscout/plugin-sdk package later, so it imports nothing from the
- * app's internals (only the types of express and node:sqlite).
+ * The public plugin API. Self-contained on purpose: it is the canonical source,
+ * in `@photoscout/plugin-sdk/server`, and imports nothing from the app's
+ * internals (only the types of express and node:sqlite). The app re-exports it
+ * from server/src/plugins/types.ts.
  */
 
-/** The host's plugin API version. A plugin states a semver range of it in `photoscout`. */
-export const HOST_API_VERSION = '1.0.0';
+/**
+ * The host's plugin API version: the server contract (ServerPlugin, PluginContext) and the manifest
+ * fields. A plugin states a semver range of it in `photoscout`, and manifest.ts checks that range
+ * against this constant. It is independent of the browser API's WEB_API_VERSION (`@photoscout/plugin-sdk/web`),
+ * which a bundle reads from `host.apiVersion`. See docs/plugins/web-api-design.md, "Versions".
+ * 1.1.0 accepts a .mjs web bundle (1.0.0 accepted only .js).
+ */
+export const HOST_API_VERSION = '1.1.0';
 
 export type PermissionKind = 'network' | 'secrets' | 'realtime' | 'llm' | 'tasks' | 'storage';
 

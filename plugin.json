@@ -1,8 +1,8 @@
 {
   "id": "map.24thframe.waze",
   "name": "Waze police & hazards",
-  "version": "1.0.0",
-  "description": "Police, hazard and road reports from Waze, read from a self-hosted harvester, with a police heatmap built from past sightings.",
+  "version": "1.1.0",
+  "description": "Police, hazard and road reports from Waze, read from a self-hosted harvester, with a police heatmap built from sightings it has seen.",
   "author": "PhotoScout",
   "homepage": "https://www.waze.com",
   "category": "map",
@@ -15,7 +15,8 @@
     { "kind": "network", "detail": "127.0.0.1:8098" },
     { "kind": "network", "detail": "waze-reports:8088" },
     { "kind": "secrets", "detail": "The harvester API key, sent only to the harvester at one of the hosts above" },
-    { "kind": "storage", "detail": "Police sightings for the heatmap, kept for seven days in the plugin's own database" }
+    { "kind": "storage", "detail": "Police sightings for the heatmap, kept for seven days in the plugin's own database" },
+    { "kind": "tasks", "detail": "Polls the monitored areas on a schedule, in the background, to record police sightings for the heatmap. Off until areas are set" }
   ],
   "settings": [
     {
@@ -29,6 +30,21 @@
       "type": "secret",
       "label": "Harvester API key",
       "help": "The harvester's SERVICE_API_KEY, sent as X-API-Key to that address only. Stored as a secret: the settings page shows only whether one is set."
+    },
+    {
+      "key": "monitorAreas",
+      "type": "string",
+      "label": "Monitored areas",
+      "help": "Optional. Areas the plugin polls on a schedule, so police reports are recorded for the heatmap when nobody has the map open. Each area is minLng,minLat,maxLng,maxLat (the map's box order), and areas are separated by semicolons, for example 151.10,-33.95,151.30,-33.80; 144.90,-37.85,145.05,-37.75. Up to 10. Leave empty to switch monitoring off."
+    },
+    {
+      "key": "monitorIntervalMinutes",
+      "type": "number",
+      "label": "Poll every (minutes)",
+      "help": "How often the monitored areas are polled, from 1 to 1440 minutes. The schedule is set when the first area is saved, so after changing this, disable and enable the plugin (or restart the server) for the new interval to apply.",
+      "default": 5,
+      "min": 1,
+      "max": 1440
     }
   ]
 }

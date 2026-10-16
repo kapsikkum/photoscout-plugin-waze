@@ -1,5 +1,3 @@
-import type { Map as MapLibreMap } from 'maplibre-gl';
-import type { LngLat } from '../sdk/web-api.js';
 import { HEAT_WINDOWS, type HeatWindowStore } from './heat.js';
 import { coverageNote, connectionText, setupNeedsPolling, type ActivityLevel } from './status.js';
 import type { WazeSetupView, WazeStatusResponse } from './types.js';
@@ -48,44 +46,13 @@ export function renderRangeSelector(el: HTMLElement, store: HeatWindowStore): ()
   return () => release();
 }
 
-/** The report popup: a bold title, then one line each for the street, the description, the time and the source. */
+/**
+ * The report popup's content: a bold title, then one line each for the street, the description, the time and
+ * the source. Both the map page's popup and the Drive map's are the host's (host.map.showPopup, ctx.showPopup),
+ * which take this element and place, close and style it themselves.
+ */
 export function reportPopupElement(title: string, lines: readonly string[]): HTMLElement {
   return h('div', {}, h('strong', { text: title }), ...lines.map((text) => h('p', { text })));
-}
-
-const TAP_POPUP_STYLE = [
-  'position:absolute', 'transform:translate(-50%,calc(-100% - 14px))', 'z-index:3', 'max-width:240px',
-  'background:#fff', 'color:#172b49', 'border-radius:8px', 'box-shadow:0 2px 8px rgba(0,0,0,.3)',
-  'padding:8px 28px 8px 10px', 'font:13px/1.35 system-ui,sans-serif', 'pointer-events:auto',
-].join(';');
-
-/**
- * A popup on the Drive map. The host's showPopup attaches only to the map page, so a Drive pin is answered
- * here: a box placed over the map at the point, that follows the map and closes on a click on the map or
- * its close button. Returns the function that removes it.
- */
-export function showTapPopup(map: MapLibreMap, at: LngLat, content: HTMLElement): () => void {
-  const box = h('div', {});
-  box.style.cssText = TAP_POPUP_STYLE;
-  const close = h('button', { type: 'button', 'aria-label': 'Close', text: '×' });
-  close.style.cssText = 'position:absolute;top:2px;right:4px;border:0;background:none;font-size:18px;line-height:1;cursor:pointer;color:inherit;';
-  box.append(content, close);
-  const place = (): void => {
-    const p = map.project(at);
-    box.style.left = `${p.x}px`;
-    box.style.top = `${p.y}px`;
-  };
-  const remove = (): void => {
-    map.off('move', place);
-    map.off('click', remove);
-    box.remove();
-  };
-  close.addEventListener('click', remove);
-  map.on('move', place);
-  map.on('click', remove);
-  map.getContainer().append(box);
-  place();
-  return remove;
 }
 
 export interface StatusSettingsDeps {

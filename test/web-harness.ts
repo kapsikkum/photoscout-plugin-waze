@@ -3,7 +3,7 @@
 // views make; a fake map records the layers it is given. Nothing here runs as a test (the glob is *.test.ts).
 import type {
   CornerPanelDef, DriveAlert, DriveAlertSourceDef, DriveSourceContext, DriveStatus, LegendEntry, LegendEntryDef, LngLat, PluginHost,
-  PollOptions, PluginMapClick, SettingsTabDef,
+  PollOptions, PluginMapClick, SettingsTabDef, SpeakRefusal, SpeakResult,
 } from '../src/sdk/web-api.js';
 
 export const PLUGIN_ID = 'map.24thframe.waze';
@@ -151,7 +151,6 @@ export class FakeMap {
   readonly sources = new Map<string, { data: unknown }>();
   readonly layers: LayerSpec[] = [];
   readonly images: string[] = [];
-  readonly container = new FakeEl('div');
   private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
 
   addSource(id: string, spec: { data?: unknown }): void {
@@ -170,15 +169,7 @@ export class FakeMap {
     return this.images.includes(id);
   }
 
-  getContainer(): FakeEl {
-    return this.container;
-  }
-
-  /** A projection that is the identity on [lng, lat], enough for a popup's position to be checked. */
-  project(at: LngLat): { x: number; y: number } {
-    return { x: at[0], y: at[1] };
-  }
-
+  /** Records the map's event listeners, so a test can see whether the plugin listens to the map at all. */
   on(type: string, fn: (...args: unknown[]) => void): void {
     const list = this.handlers.get(type) ?? [];
     list.push(fn);
@@ -187,11 +178,6 @@ export class FakeMap {
 
   off(type: string, fn: (...args: unknown[]) => void): void {
     this.handlers.set(type, (this.handlers.get(type) ?? []).filter((f) => f !== fn));
-  }
-
-  /** Test helper: what the map does when the user does something (a click, a move). */
-  fire(type: string): void {
-    for (const fn of [...(this.handlers.get(type) ?? [])]) fn();
   }
 
   listenerCount(type: string): number {
@@ -232,19 +218,21 @@ export interface Recorded {
   posts: string[];
   activity: Array<{ message: string; level: string | undefined }>;
   popups: Array<{ content: unknown }>;
+  /** The developer log lines (host.log.info), in order. */
+  logs: string[];
 }
 
 /** A fake PluginHost, and what it recorded. `respond` answers each data request by its path (and method). */
 export function fakeHost(respond: (path: string, init?: RequestInit) => unknown): { host: PluginHost; rec: Recorded } {
   const rec: Recorded = {
     legend: [], entries: {}, corners: [], tabs: [], driveSources: [], ready: [], clicks: [], polls: [],
-    requests: [], posts: [], activity: [], popups: [],
+    requests: [], posts: [], activity: [], popups: [], logs: [],
   };
   const host = {
     id: PLUGIN_ID,
     name: 'Waze police & hazards',
-    version: '1.0.0',
-    apiVersion: '1.0.0',
+    version: '1.1.0',
+    apiVersion: '2.0.0',
     user: null,
     map: {
       current: null,
@@ -307,7 +295,7 @@ export function fakeHost(respond: (path: string, init?: RequestInit) => unknown)
         };
       },
     },
-    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    log: { info: (message: string) => { rec.logs.push(message); }, warn: () => undefined, error: () => undefined },
     activity: (message: string, level?: string) => {
       rec.activity.push({ message, level });
     },
@@ -319,13 +307,14 @@ export interface DriveCtxOptions {
   map?: FakeMap;
   /** The on-route distance the host would give for a point; null when the point is not on the road ahead. */
   routeAhead?: (point: LngLat) => number | null;
-  /** What `speak` answers: the host says it only when voice is on and the fix is fresh. */
-  speakAnswer?: boolean;
+  /** Why the host refuses to speak (voice off, duplicate, a stale fix...). Unset: the host says it. */
+  speakRefusal?: SpeakRefusal;
 }
 
 /**
  * A fake Drive context (DriveSourceContext) that records what a source reports: its alerts, its status
- * line, what it says, and the layers it claims for taps. Its scoped ids take the host's prefix.
+ * line, what it says, the icons it adds, the popups it shows and the layers it claims for taps. Its scoped
+ * ids take the host's prefix. The fix is always null (a test that needs one sets its own).
  */
 export function fakeDriveContext(opts: DriveCtxOptions = {}) {
   const map = opts.map ?? new FakeMap();
@@ -333,18 +322,32 @@ export function fakeDriveContext(opts: DriveCtxOptions = {}) {
   const statuses: Array<DriveStatus | null> = [];
   const spoken: Array<{ text: string; key?: string }> = [];
   const claims: Array<{ layers: readonly string[]; onTap?: (tap: PluginMapClick) => void }> = [];
+  const images: string[] = [];
+  const removedImages: string[] = [];
+  const popups: Array<{ at: LngLat; content: unknown }> = [];
   const aheadOf = opts.routeAhead ?? (() => null);
   const ctx: DriveSourceContext = {
     map: map as unknown as DriveSourceContext['map'],
-    position: () => null,
+    fix: () => null,
     route: () => null,
     heading: () => null,
     routeAhead: (point) => aheadOf(point),
     report: (alerts) => { reports.push([...alerts]); },
     setStatus: (status) => { statuses.push(status); },
-    speak: (text, o) => {
+    speak: (text, o): SpeakResult => {
       spoken.push({ text, key: o?.key });
-      return opts.speakAnswer ?? true;
+      return opts.speakRefusal ? { spoken: false, reason: opts.speakRefusal } : { spoken: true };
+    },
+    addImage: (name) => {
+      images.push(name);
+      return `${DRIVE_PREFIX}${name}`;
+    },
+    removeImage: (name) => {
+      removedImages.push(name);
+    },
+    showPopup: (at, content) => {
+      popups.push({ at, content });
+      return { close: () => undefined };
     },
     scopedId: (name) => `${DRIVE_PREFIX}${name}`,
     mapLayers: (layerIds, o) => {
@@ -356,5 +359,5 @@ export function fakeDriveContext(opts: DriveCtxOptions = {}) {
       };
     },
   };
-  return { ctx, map, reports, statuses, spoken, claims };
+  return { ctx, map, reports, statuses, spoken, claims, images, removedImages, popups };
 }

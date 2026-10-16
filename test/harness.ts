@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { PluginContext, PluginManifest } from '../src/sdk/server-api.js';
+import type { PluginContext, PluginManifest, PluginTaskDef } from '../src/sdk/server-api.js';
 import plugin from '../src/server.js';
 
 export const ROOT = path.resolve(import.meta.dirname, '..');
@@ -54,6 +54,9 @@ export function fakeContext(opts: ActivateOptions = {}) {
   const db = new DatabaseSync(':memory:');
   const settings = { ...(opts.settings ?? {}) };
   const listeners: ((s: Record<string, unknown>) => void)[] = [];
+  /** The tasks the plugin registered, and the log lines it wrote, for the tests to read. */
+  const registered: PluginTaskDef[] = [];
+  const lines: { level: 'info' | 'warn' | 'error'; msg: string }[] = [];
   const ctx = {
     manifest,
     router,
@@ -74,15 +77,19 @@ export function fakeContext(opts: ActivateOptions = {}) {
       get: () => settings,
       onChange: (fn: (s: Record<string, unknown>) => void) => { listeners.push(fn); return () => {}; },
     },
-    tasks: { register: () => {} },
+    tasks: { register: (def: PluginTaskDef) => { registered.push(def); } },
     fetch: opts.fetchFn ?? (async () => { throw new Error('no fetch stubbed'); }),
     db,
     dataDir: opts.dataDir ?? tempDataDir().dataDir,
-    log: { info: () => {}, warn: () => {}, error: () => {} },
+    log: {
+      info: (msg: string) => { lines.push({ level: 'info', msg }); },
+      warn: (msg: string) => { lines.push({ level: 'warn', msg }); },
+      error: (msg: string) => { lines.push({ level: 'error', msg }); },
+    },
     services: { url: () => null },
   } as unknown as PluginContext;
   return {
-    ctx, router, db, settings,
+    ctx, router, db, settings, registered, lines,
     /** Replace the settings and tell the plugin, as the host does on save. */
     changeSettings(next: Record<string, unknown>) {
       for (const k of Object.keys(settings)) delete settings[k];

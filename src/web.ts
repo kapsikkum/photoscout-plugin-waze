@@ -1,12 +1,15 @@
-import type { Bbox, DriveAlert, DriveSourceContext, LegendEntry, PluginHost, PluginMapClick, WebPlugin } from './sdk/web-api.js';
+import type { Bbox, DriveAlert, DriveSourceContext, LegendEntry, PluginHost, PluginMapClick, SpeakRefusal, WebPlugin } from './sdk/web-api.js';
 import { createHeatWindowStore, HEAT_DEFAULT_MS, heatmapGeoJSON } from './web/heat.js';
-import { addHeatLayer, addReportIcons, addReportLayers, EMPTY_COLLECTION, setSourceData, type PinLayerIds, type WazeLayerIds } from './web/layers.js';
+import {
+  addDriveReportIcons, addHeatLayer, addReportIcons, addReportLayers, DRIVE_ICON_SIZE, EMPTY_COLLECTION, ICON_PREFIX,
+  setSourceData, type PinLayerIds, type WazeLayerIds,
+} from './web/layers.js';
 import { alertsPath, heatmapPath, statusPath } from './web/query.js';
 import { DRIVE_ERROR_TEXT, DRIVE_TICK_MS, announceNearest, driveStatusFor } from './web/drive.js';
 import { driveAlerts, reportGeoJSON, reportPopup } from './web/reports.js';
 import { reportsActivity } from './web/status.js';
 import type { WazeAlertsResponse, WazeHeatmapResponse, WazeSetupView, WazeStatusResponse } from './web/types.js';
-import { renderRangeSelector, renderStatusSettings, reportPopupElement, showTapPopup } from './web/view.js';
+import { renderRangeSelector, renderStatusSettings, reportPopupElement } from './web/view.js';
 
 /**
  * Police & hazards, web half. Everything it adds goes through the plugin web API (src/sdk/web-api.ts):
@@ -16,7 +19,7 @@ import { renderRangeSelector, renderStatusSettings, reportPopupElement, showTapP
  *   - the Settings tab: harvester status, the admin's Set up button, first-run instructions for admins,
  *     the time window (host.settings);
  *   - Drive's reports: the route-ahead banner, the spoken warning, the status line, its on/off button, and the
- *     pins on the Drive map with their popup (host.drive.addAlertSource, 1.1.0).
+ *     pins on the Drive map with their popup (host.drive.addAlertSource, web API 2.0.0).
  * The data comes from this plugin's own routes, read through host.data, so nothing reaches another plugin
  * or the core app. Ported from the core app's map/waze.ts, map/policeHeat.ts, MapPage.tsx, WazeSettings.tsx
  * and the Drive screen (pages/Drive.tsx, drive/reports.ts).
@@ -57,7 +60,7 @@ const plugin: WebPlugin = {
       reportsSource: host.map.scopedId('reports-src'),
       reports: host.map.scopedId('reports'),
       labels: host.map.scopedId('report-labels'),
-      icons: host.map.scopedId('icon-'),
+      icons: host.map.scopedId(ICON_PREFIX),
       heatSource: host.map.scopedId('police-heat-src'),
       heat: host.map.scopedId('police-heat'),
     };
@@ -118,29 +121,43 @@ const plugin: WebPlugin = {
       runs: 'always',
       start(ctx: DriveSourceContext) {
         const failures = failureWatch(host, 'Police and hazard reports are unavailable right now');
-        // The Drive map is its own map, so the pins are drawn on it under this source's scoped ids.
+        // The Drive map is its own map, so the pins are drawn on it under this source's scoped ids, and their
+        // icons go in through the host (which removes them when the source stops).
         const pins: PinLayerIds = {
           reportsSource: ctx.scopedId('reports-src'),
           reports: ctx.scopedId('reports'),
           labels: ctx.scopedId('labels'),
-          icons: ctx.scopedId('icon-'),
+          icons: ctx.scopedId(ICON_PREFIX),
         };
-        addReportIcons(ctx.map, pins.icons);
-        addReportLayers(ctx.map, pins);
+        addDriveReportIcons(ctx);
+        addReportLayers(ctx.map, pins, DRIVE_ICON_SIZE);
 
-        // The Drive screen gives a tap on these pins to us: the popup opens and no destination is picked (core's behaviour).
-        let closePopup: (() => void) | null = null;
+        // The Drive screen gives a tap on these pins to us: the popup opens and no destination is picked (core's
+        // behaviour). The host holds one popup per source and closes it on the next map click or when the source stops.
         const claim = ctx.mapLayers([pins.reports, pins.labels], {
           onTap: (tap) => {
-            closePopup?.();
             const popup = reportPopup(tap.features[0]?.properties, formatTime);
-            closePopup = showTapPopup(tap.map, tap.lngLat, reportPopupElement(popup.title, popup.lines));
+            ctx.showPopup(tap.lngLat, reportPopupElement(popup.title, popup.lines));
           },
         });
 
-        // The warning is the nearest report ahead, asked for every two seconds as core's Drive screen does.
+        // The warning is the nearest report ahead, asked for every two seconds as core's Drive screen does. A
+        // refusal by the host is logged once when its reason changes; "duplicate" is the normal answer after the
+        // first time, so it is not logged.
         let latest: DriveAlert[] = [];
-        const speech = setInterval(() => { announceNearest(ctx, latest); }, DRIVE_TICK_MS);
+        let refused: SpeakRefusal | null = null;
+        const say = (): void => {
+          const said = announceNearest(ctx, latest);
+          if (!said) return;
+          if (said.spoken) {
+            refused = null;
+            return;
+          }
+          if (said.reason === 'duplicate' || said.reason === refused) return;
+          refused = said.reason;
+          host.log.info(`Drive warning not spoken: ${said.reason}`);
+        };
+        const speech = setInterval(say, DRIVE_TICK_MS);
 
         const poll = host.data.poll<WazeAlertsResponse>({
           map: ctx.map,
@@ -153,7 +170,7 @@ const plugin: WebPlugin = {
             ctx.report(latest);
             setSourceData(ctx.map, pins.reportsSource, reportGeoJSON(res.alerts));
             ctx.setStatus(driveStatusFor(res.state));
-            announceNearest(ctx, latest);
+            say();
           },
           retryAfterMs: (res) => (res.state === 'fresh' ? null : res.retryAfterMs),
           onError: () => {
@@ -174,7 +191,6 @@ const plugin: WebPlugin = {
         return () => {
           clearInterval(speech);
           poll.stop();
-          closePopup?.();
           claim();
         };
       },
