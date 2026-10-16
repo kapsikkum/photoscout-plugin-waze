@@ -16,15 +16,15 @@ The default image is `system-images;android-36;google_apis;x86_64`, the newest s
 
 ### First-run screen
 
-Waze shows welcome screens the first time it runs on a new Android volume. The server operator completes them once, and the result is kept on the volume. The worker detects this read-only: every 60 seconds while no reports arrive, it dumps the screen layout with `uiautomator` and looks for Waze's welcome-screen identifiers. It never sends taps, text or swipes. When it finds the welcome screen, `/health` reports `setup_stage: needs_first_run` with `first_run.how`; setup prints the same steps, and the plugin's Settings tab shows them to admins. Reports start after the screens are complete, and the state clears itself.
+Waze shows a welcome screen the first time it runs on a new Android volume. **The worker clears it automatically — no operator input.** It watches for the welcome screen (every 60 seconds while no reports arrive, it dumps the layout with `uiautomator` and looks for Waze's welcome-screen identifiers; detection in `first_run.py` is read-only), and when it appears the boot loop taps Waze's "Get started" button itself and moves on from `setup_stage: needs_first_run` to `connecting_waze`. The result is kept on the Android volume, so this happens at most once per volume, and reports start on their own afterwards.
 
-To complete the screens, enable screen access and re-run setup (`npm run waze:setup -- --screen-access`, or set `WAZE_SCREEN_ACCESS=1` in the server environment for the plugin's Settings button):
+**Fallback (rarely needed).** If an unexpected or changed welcome flow stops the auto-tap and `setup_stage` stays `needs_first_run`, you can finish it by hand. Enable screen access (`npm run waze:setup -- --screen-access`, or set `WAZE_SCREEN_ACCESS=1` in the server environment for the plugin's Settings button), then:
 
 ```sh
 adb connect 127.0.0.1:5556 && scrcpy -s 127.0.0.1:5556
 ```
 
-Run this on the machine that runs the worker, complete Waze's welcome screens, then close scrcpy. On a remote server, forward the port first with `ssh -L 5556:127.0.0.1:5556 <server>`. Screen access publishes the emulator's adb port on `127.0.0.1:5556` only: anyone who can reach that port has full adb control of the Android guest, so keep it on loopback. Without screen access the port stays closed, and the worker keeps reporting `needs_first_run`.
+Run this on the machine that runs the worker, tap through Waze's welcome screen, then close scrcpy. On a remote server, forward the port first with `ssh -L 5556:127.0.0.1:5556 <server>`. Screen access publishes the emulator's adb port on `127.0.0.1:5556` only: anyone who can reach that port has full adb control of the Android guest, so keep it on loopback. Without screen access the port stays closed.
 
 The Android image needs ARM64 native libraries, because Waze's bundle is ARM64. A mirror can return an ARMv7 bundle even when ARM64 was requested; setup checks the actual libraries and reports that a compatible installer is needed. Download an ARM64 Waze 5.25.0.1 APK bundle through its normal download page, then use `npm run waze:setup -- --apk "path/to/waze.apkm"`. Alternatively, save the bundle as `data/waze/installer.apkm` and retry the Settings button. The helper copies that installer into the owned Android volume; no host folder or container socket is mounted. Publisher verification still applies. For a separately managed bridge container, mount the file read-only and set `WAZE_APK_PATH` to its container path. The top-level `README.md` shows this with `docker run`.
 

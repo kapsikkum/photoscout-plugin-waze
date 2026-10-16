@@ -101,7 +101,7 @@ Notes:
 - **You supply the Waze APK.** It is never in the image or the plugin. It must be Waze **5.25.0.1** exactly, as an ARM64 bundle (`.apkm`, or `.apk`), from Waze's normal download page. If you do not supply one, the container tries to download Waze itself. That can fail, or return the wrong CPU build. The container checks the APK's signature against Waze's publisher certificates and refuses anything else.
 - **`/dev/kvm` makes it usable.** With KVM, the emulator is much faster. Without it, the emulator uses software emulation, and the first boot can take 15 to 30 minutes.
 - **Resources.** Reserve about 6 GB of RAM, 4 CPUs and several GB of disk for the container. On Docker Desktop, give the VM at least that much memory.
-- **First run needs one-time screens.** A new Android volume shows Waze's welcome screens once. `/health` reports `setup_stage: needs_first_run` until they are done. [harvester/README.md](harvester/README.md) explains how to complete them.
+- **First run is automatic.** On a new Android volume Waze shows a welcome screen once; the worker taps through it itself (`setup_stage` goes `needs_first_run` → `connecting_waze` with no input). Only if an unexpected screen blocks the auto-tap do you need the manual fallback in [harvester/README.md](harvester/README.md).
 - **Port 8098 can be used once.** PhotoScout's own Waze setup, or a compose stack, may already publish `127.0.0.1:8098`. Stop it before you start this container.
 - **PhotoScout must reach the harvester.** From a native PhotoScout, that is `127.0.0.1:8098`.
 - **Keep the key secret.** The plugin stores it as a secret, and the settings page shows only whether one is set.
