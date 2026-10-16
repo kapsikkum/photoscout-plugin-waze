@@ -1,0 +1,103 @@
+// Vendored copy of server/src/plugins/types.ts from PhotoScout (the server plugin contract, host API 1.0.0).
+// A copy pending the @photoscout/plugin-sdk package: types only. Do not edit it here; re-copy it from the
+// PhotoScout repository when the host API changes.
+import type { Request, Response as ExpressResponse, Router } from 'express';
+import type { DatabaseSync } from 'node:sqlite';
+
+/**
+ * The public plugin API. Self-contained on purpose: this file is meant to move
+ * into the @photoscout/plugin-sdk package later, so it imports nothing from the
+ * app's internals (only the types of express and node:sqlite).
+ */
+
+/** The host's plugin API version. A plugin states a semver range of it in `photoscout`. */
+export const HOST_API_VERSION = '1.0.0';
+
+export type PermissionKind = 'network' | 'secrets' | 'realtime' | 'llm' | 'tasks' | 'storage';
+
+export type SettingField =
+  | { key: string; type: 'string' | 'secret' | 'url'; label: string; help?: string; default?: string; required?: boolean }
+  | { key: string; type: 'number'; label: string; help?: string; default?: number; min?: number; max?: number; required?: boolean }
+  | { key: string; type: 'boolean'; label: string; help?: string; default?: boolean; required?: boolean }
+  | { key: string; type: 'select'; label: string; help?: string; default?: string; options: { value: string; label: string }[]; required?: boolean };
+
+export interface ServiceSpec {
+  name: string;
+  image: string;
+  port: number;
+  health?: string;
+  env?: Record<string, string>;
+  volumes?: string[];
+  devices?: { path: string; optional?: boolean }[];
+  memory?: string;
+  cpus?: number;
+}
+
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  homepage?: string;
+  icon?: string;
+  category: 'map' | 'feed' | 'events' | 'ai' | 'tools';
+  photoscout: string;
+  server?: string;
+  web?: string;
+  permissions?: { kind: PermissionKind; detail?: string }[];
+  services?: ServiceSpec[];
+  settings?: SettingField[];
+  /**
+   * Routes under /api/plugins/<id>/ that a visitor who has not signed in may GET or HEAD.
+   * Paths are relative to the plugin, e.g. "/places" or "/stations/*" (a * matches any run
+   * of characters, slashes included). Every other plugin route needs a signed-in session.
+   */
+  public?: string[];
+}
+
+export interface PluginTaskDef {
+  id: string;
+  name: string;
+  description?: string;
+  intervalMinutes: number | null;
+  run(log: (msg: string) => void): Promise<{ ok: boolean; message: string }>;
+}
+
+export interface PluginContext {
+  manifest: PluginManifest;
+  /** Mounted at /api/plugins/<id>/ */
+  router: Router;
+  auth: {
+    requireUser(req: Request, res: ExpressResponse): boolean;
+    requireAdmin(req: Request, res: ExpressResponse): boolean;
+  };
+  settings: {
+    get(): Record<string, unknown>;
+    onChange(fn: (s: Record<string, unknown>) => void): () => void;
+  };
+  tasks: { register(def: PluginTaskDef): void };
+  /**
+   * Public internet only: private and loopback addresses are refused, and every redirect hop is checked.
+   * One exception, opt-in: a manifest `permissions` entry `{ kind: 'network', detail: '<host>' | '<host>:<port>' }`
+   * lets this fetch reach that exact host even when it is private or loopback (a local model server, a sidecar).
+   * The host must match exactly, and the port too when one is given; a redirect hop is allowed only if it is
+   * public or another declared host. A "*.example.com" detail is informational and never opens anything.
+   */
+  fetch(url: string, init?: RequestInit): Promise<Response>;
+  /** The plugin's own SQLite file, data/plugins/<id>/data/plugin.db. Never the core database. */
+  db: DatabaseSync;
+  /** data/plugins/<id>/data/ */
+  dataDir: string;
+  log: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
+  services: { url(name: string): string | null };
+}
+
+export interface ServerPlugin {
+  activate(ctx: PluginContext): void | Promise<void>;
+  deactivate?(): void | Promise<void>;
+}
+
+export function definePlugin(p: ServerPlugin): ServerPlugin {
+  return p;
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+*.apk
+*.apkm
+*.apks
+*.xapk
+.env*
+__pycache__/
+.pytest_cache/

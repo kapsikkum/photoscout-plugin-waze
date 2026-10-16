@@ -1,0 +1,34 @@
+{
+  "id": "map.24thframe.waze",
+  "name": "Waze police & hazards",
+  "version": "1.0.0",
+  "description": "Police, hazard and road reports from Waze, read from a self-hosted harvester, with a police heatmap built from past sightings.",
+  "author": "PhotoScout",
+  "homepage": "https://www.waze.com",
+  "category": "map",
+  "photoscout": "^1.0",
+  "server": "server.js",
+  "web": "web.js",
+  "public": ["/status", "/alerts", "/heatmap"],
+  "permissions": [
+    { "kind": "network", "detail": "127.0.0.1:18199" },
+    { "kind": "network", "detail": "127.0.0.1:8098" },
+    { "kind": "network", "detail": "waze-reports:8088" },
+    { "kind": "secrets", "detail": "The harvester API key, sent only to the harvester at one of the hosts above" },
+    { "kind": "storage", "detail": "Police sightings for the heatmap, kept for seven days in the plugin's own database" }
+  ],
+  "settings": [
+    {
+      "key": "harvesterUrl",
+      "type": "url",
+      "label": "Harvester address",
+      "help": "Where the harvester answers, without a path: http://127.0.0.1:8098 (standalone), http://127.0.0.1:18199 (tunnel) or http://waze-reports:8088 (Compose service). The host and port must be one listed under this plugin's network permissions; the plugin sends its key to no other address."
+    },
+    {
+      "key": "harvesterKey",
+      "type": "secret",
+      "label": "Harvester API key",
+      "help": "The harvester's SERVICE_API_KEY, sent as X-API-Key to that address only. Stored as a secret: the settings page shows only whether one is set."
+    }
+  ]
+}

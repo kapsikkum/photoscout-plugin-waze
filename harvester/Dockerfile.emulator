@@ -1,0 +1,48 @@
+# Self-contained Linux bridge. Software emulation needs neither KVM nor a Docker socket.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive ANDROID_HOME=/opt/android ANDROID_SDK_ROOT=/opt/android
+ENV PATH=/opt/venv/bin:/opt/android/emulator:/opt/android/platform-tools:/opt/android/cmdline-tools/latest/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv openjdk-21-jre-headless ca-certificates curl unzip socat git \
+    libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 \
+    libnss3 libpulse0 libasound2t64 libglu1-mesa libvulkan1 procps \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY install_sdk.py ./
+RUN python3 install_sdk.py
+# Newest stable Google APIs x86_64 image (ARM64 translation for Waze's ARM64 bundle, root for Frida).
+# Building with another image (e.g. system-images;android-31;google_apis;x86_64) keeps an old AVD usable;
+# the worker derives its AVD name from this value, so a changed image gets a fresh AVD.
+ARG WAZE_SYSTEM_IMAGE=system-images;android-36;google_apis;x86_64
+ENV WAZE_SYSTEM_IMAGE=${WAZE_SYSTEM_IMAGE}
+RUN python3 -c "import os, subprocess; image=os.environ['WAZE_SYSTEM_IMAGE']; subprocess.run(['sdkmanager','--licenses'],input='y\n'*100,text=True,check=True); subprocess.run(['sdkmanager','platform-tools','emulator',image],input='y\n'*100,text=True,check=True)"
+# Pin the official Linux 36.6.11 archive. The current 37.2.12 headless binary
+# failed its libandroid-webrtc symbol lookup in the isolated no-KVM test.
+COPY pin_emulator_metadata.py ./
+RUN curl -fSL https://dl.google.com/android/repository/emulator-linux_x64-15507667.zip -o /tmp/emulator.zip \
+    && echo '1eade4cf2df6ea8eeead4902c635897ba12aaa32aac4389eaae0fdb498a5b830  /tmp/emulator.zip' | sha256sum -c - \
+    && cp /opt/android/emulator/package.xml /tmp/emulator-package.xml \
+    && rm -rf /opt/android/emulator \
+    && unzip -q /tmp/emulator.zip -d /opt/android \
+    && cp /tmp/emulator-package.xml /opt/android/emulator/package.xml \
+    && python3 pin_emulator_metadata.py \
+    && rm /tmp/emulator.zip
+RUN python3 -m venv /opt/venv
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+ARG APKEEP_VERSION=1.1.0
+RUN curl -fSL "https://github.com/EFForg/apkeep/releases/download/${APKEEP_VERSION}/apkeep-x86_64-unknown-linux-gnu" -o /usr/local/bin/apkeep && chmod +x /usr/local/bin/apkeep
+RUN sdkmanager 'build-tools;35.0.0'
+ARG MAGISK_VERSION=v30.7
+RUN git clone --depth 1 https://gitlab.com/newbit/rootAVD.git /opt/rootAVD \
+    && curl -fSL "https://github.com/topjohnwu/Magisk/releases/download/${MAGISK_VERSION}/Magisk-${MAGISK_VERSION}.apk" -o /opt/rootAVD/Magisk.zip \
+    && mkdir -p /opt/rootAVD/Apps \
+    && cp /opt/rootAVD/Magisk.zip /opt/rootAVD/Apps/Magisk.apk \
+    && curl -fSL https://github.com/KOWX712/PlayIntegrityFix/releases/download/v4.8-inject-s/PlayIntegrityFix_v4.8-inject-s.zip -o /opt/PIF.zip \
+    && chmod +x /opt/rootAVD/rootAVD.sh
+COPY harvester.py protobuf.py rt_reports.py rt_stream.py report_queue.py boot_emulator.py apk_install.py first_run.py ./
+ENV ADB_SERIAL=emulator-5554 FRIDA_DEVICE_ID=emulator-5554 PORT=8088
+ENV ANDROID_AVD_HOME=/data/avd WAZE_VERSION=5.25.0.1
+VOLUME /data
+EXPOSE 8088
+CMD ["python", "boot_emulator.py"]

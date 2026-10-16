@@ -1,0 +1,27 @@
+{
+  "name": "@photoscout-plugin/waze",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Waze police and hazard reports for PhotoScout, read from a self-hosted harvester.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.8",
+    "esbuild": "^0.28.2",
+    "fflate": "^0.8.3",
+    "maplibre-gl": "^6.11.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

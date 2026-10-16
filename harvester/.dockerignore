@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.log
+.env*
+data/
+.venv/
+venv/
+*.apk
+*.apkm
+*.apks
+*.xapk
+*.zip
