@@ -1,189 +1,134 @@
 # Waze police & hazards (PhotoScout plugin)
 
-A PhotoScout plugin, `map.24thframe.waze`, that shows Waze police, hazard and road reports from a
-self-hosted harvester, plus a police heatmap built from sightings it has seen.
+A PhotoScout plugin (`map.24thframe.waze`) that shows Waze police, hazard and road reports on the map, plus a police heatmap. The reports come from a self-hosted **harvester**: a container that runs Waze on an Android emulator and answers PhotoScout's requests.
 
-This repo holds the **server half** (three routes under `/api/plugins/map.24thframe.waze/`) and the
-**web half** (the map layers, legend toggles, popup, heatmap time window, Settings tab and Drive warnings),
-both built into one zip.
+To run it you need three things: the harvester running, the plugin installed in PhotoScout, and the plugin pointed at the harvester.
 
-- `GET /status[?check=1]`: whether the harvester is configured and reachable, and its setup state.
-- `GET /alerts?minLng=&minLat=&maxLng=&maxLat=[&priority=navigation]`: reports in a box, cached per 0.05 degree cell for 60 s.
-- `GET /heatmap?minLng=&minLat=&maxLng=&maxLat=[&windowMs=]`: police sightings from the plugin's own database, one hour to seven days. Map views and the scheduled area monitor both fill it.
+## How to run it
 
-The server half also runs an opt-in scheduled poll over areas you set in Settings, so the heatmap keeps
-filling in when nobody has the map open (see "Scheduled area monitoring").
+### 1. Start the harvester
 
-The web half is `src/web.ts`, written against the web plugin API (`src/sdk/web-api.ts`) and nothing from
-the core app. It uses only the types of maplibre-gl and geojson, and bundles to `web.js`.
+Make a random key. You will paste the same key into the plugin in step 3.
 
-## What it needs
-
-- **A running harvester.** It runs Waze on a controlled Android emulator and answers `GET /alerts` and
-  `GET /health`. It is in `harvester/`, a copy of PhotoScout's `services/waze-harvester`. Container setup
-  is in `harvester/README.md`. That README is written for the PhotoScout repo, so its commands
-  (`npm run waze:setup`, `docker-compose.waze-reports.yml`) run from there.
-- **The same harvester for monitoring.** A scheduled poll asks the harvester as a map view does. If the
-  harvester is down, each poll records that as its result, and the next poll tries again.
-- **PhotoScout with plugin API `^1.0`** (`"photoscout": "^1.0"`, which host API 1.1.0 satisfies). The web half
-  also uses web API 2.0.0 (the Drive `fix`, `showPopup` and `addImage`, and the `speak` result). The manifest
-  cannot state a web range, so run it against a PhotoScout that has 2.0.0.
-
-## Settings
-
-| Setting | Meaning |
-|---|---|
-| Harvester address | Base address only, e.g. `http://127.0.0.1:8098`. The host and port must be one of the declared hosts below. A full `.../alerts` address is accepted too. |
-| Harvester API key | The harvester's `SERVICE_API_KEY`, sent as `X-API-Key`. Stored as a secret; the settings page shows only whether it is set. |
-| Monitored areas | Optional, and empty by default. Boxes to poll on a schedule, each `minLng,minLat,maxLng,maxLat`, separated by semicolons; up to 10. See "Scheduled area monitoring". |
-| Poll every (minutes) | How often the monitored areas are polled: 1 to 1440, default 5. It applies when the schedule starts; see "Scheduled area monitoring". |
-
-If the address is left empty, the plugin reads the core app's `data/waze/runtime.json` (read only) as a
-fallback for an install that predates the plugin. The plugin never writes that file.
-
-## Scheduled area monitoring
-
-A map view records police reports only while someone has the map open. The monitor polls the areas you list,
-on a schedule, so the heatmap keeps filling in while nobody is looking. It is **off by default**: with no area
-set, the plugin registers no task and asks the harvester for nothing.
-
-**Areas.** Each area is one box, `minLng,minLat,maxLng,maxLat` (the map's query order). The settings form takes
-a single line, so separate areas with semicolons:
-
-```
-151.10,-33.95,151.30,-33.80; 144.90,-37.85,145.05,-37.75
+```sh
+export WAZE_HARVESTER_API_KEY="$(openssl rand -hex 32)"
 ```
 
-Newlines also separate areas. An entry that does not parse, is out of range, is listed twice, or passes the
-limit of 10 is ignored and written to the plugin's log; the other entries are still monitored. A box is widened
-to whole 0.05 degree cells (about 5 km), as the map's cache does.
+Run the published image. Replace `/absolute/path/to/waze.apkm` with the path to your Waze 5.25.0.1 bundle (see [requirements](#requirements-and-gotchas)).
 
-**Interval.** The default is 5 minutes, and the range is 1 to 1440. The host checks its tasks once a minute, so
-one minute is the shortest interval. Adding the first area starts the schedule with the interval set at that
-moment. After that, a changed interval applies only when the plugin next starts: disable and enable the plugin,
-or restart the server. Changed areas apply at the next poll, with no restart.
+```sh
+docker run -d --name photoscout-waze-harvester \
+  --init --restart unless-stopped \
+  -p 127.0.0.1:8098:8088 \
+  -e SERVICE_API_KEY="$WAZE_HARVESTER_API_KEY" \
+  -e WAZE_APK_PATH=/run/waze/installer.apkm \
+  -v "/absolute/path/to/waze.apkm:/run/waze/installer.apkm:ro" \
+  -v photoscout-waze-android:/data \
+  --shm-size 512m --memory 6g --cpus 4 \
+  ghcr.io/kapsikkum/photoscout-waze-harvester:latest
+```
 
-**What a poll does.** For each area in turn, the plugin asks the harvester for its reports, as a map view does,
-through the same 60 second cache, so a map view and the monitor share one scan per cell. A fresh or stale answer
-is recorded, as the alerts route records it, and only police reports go into the heatmap. A queued answer carries
-no reports, and an answer from the cache was recorded already, so it is not counted again. If the harvester has the area queued or scanning, the plugin asks again up to three times,
-a few seconds apart. An area still queued is skipped until the next poll.
+On a Linux host that has `/dev/kvm`, add `--device /dev/kvm \` before the image name. The emulator then uses KVM and runs much faster. Leave it out elsewhere, including Docker Desktop on Windows.
 
-**Failures.** A harvester that is down, busy or answering badly ends the poll at the area that failed. That
-failure is the task's last result, and the next poll starts with the area after it, so one bad area cannot keep
-the others from being polled. A poll does not start a new area once two minutes have passed in it.
+Check that it answers. `/health` needs no key. The first boot takes a while, so expect `setup_stage` to move through several stages.
 
-**Priority and coverage.** The harvester accepts only `map` and `navigation` as priority, so a scheduled poll
-asks at `map`, the same as a map view. It shares the harvester's queue with map views, and it never jumps ahead of
-navigation. The harvester scans one point per area, the middle of the box, and returns the reports Waze loads
-around it. A large box is only partly covered, so keep each area to a neighbourhood.
+```sh
+curl -s http://127.0.0.1:8098/health
+docker logs -f photoscout-waze-harvester    # optional: watch the first boot
+```
 
-**Where to see it.** The core app lists the task at `GET /api/tasks` (admins only), with its last result and its
-log, and an admin can run it from there. Its name is "Waze police & hazards: Police reports for monitored areas".
+On Windows, run these in WSL, or in Git Bash with `MSYS_NO_PATHCONV=1` in front of `docker run`. Git Bash otherwise rewrites the `/data` and `/run` paths.
 
-**Turning it off.** Clear the monitored areas: each scheduled run then does nothing. Disabling the plugin stops
-the task. The plugin declares a `tasks` permission for this background poll, which the admin sees at install.
+Other ways to start it:
 
-## Setup from Settings
+- **PhotoScout's compose files.** From the PhotoScout repo, run `docker compose -f docker-compose.yml -f docker-compose.waze-reports.yml up -d --build` (add `-f docker-compose.waze-kvm.yml` on Linux with `/dev/kvm`). Set `WAZE_HARVESTER_API_KEY` first. These build PhotoScout's own copy of the image and mount no APK, so see [harvester/README.md](harvester/README.md) for the `WAZE_APK_PATH` options.
+- **Build it yourself** from this repo, with `docker build -f harvester/Dockerfile.emulator -t photoscout-waze-harvester harvester`. Then use `photoscout-waze-harvester` in place of the GHCR name above. The build is several GB.
 
-An admin's **Set up Waze reports** button posts to `POST /setup`, which starts the same helper the core app
-runs, `scripts/setup-waze.mjs`, with the same state in `<DATA>/waze/setup.json`. The helper ships in the
-PhotoScout checkout, not in this zip, so the plugin runs it from there:
+### 2. Install the plugin
 
-- by default, the checkout the server was started from (`scripts/setup-waze.mjs`, two folders above the
-  server's entry file, as core computes its own root);
-- or the path in `WAZE_SETUP_HELPER`, when the server runs from somewhere else.
+1. In PhotoScout, as an admin, open **Settings → Admin → Plugins**.
+2. Install the plugin one of two ways:
+   - **Browse:** find **Waze police & hazards** (`map.24thframe.waze`) in the default registry, and install it.
+   - **Install manually:** download `map.24thframe.waze-1.1.0.zip` from the [v1.1.0 release](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.1.0), and choose it.
+3. Read the permissions the install dialog lists (the harvester's network hosts, the API key, storage and a background task), then accept.
+4. Under **Installed**, make sure the plugin is switched on.
 
-With neither, the button answers "This installation does not include the Waze setup helper", as core does.
-The `POST` answers 202 with the setup state and 503 with the reason; it is refused with 403 to anyone who is
-not an admin.
+### 3. Configure the plugin
 
-## Network permissions
+Open **Settings → Admin → Plugins → Installed → Waze police & hazards**, expand **Settings**, and fill in:
 
-The plugin reaches only these three hosts, each an exact host and port:
-
-| Entry | Who it is for |
+| Setting | Value |
 |---|---|
-| `127.0.0.1:18199` | a tunnel to a harvester on another machine |
-| `127.0.0.1:8098` | a standalone harvester on this machine (the default port) |
-| `waze-reports:8088` | the harvester as a Compose service |
+| Harvester address | `http://127.0.0.1:8098` |
+| Harvester API key | the value of `WAZE_HARVESTER_API_KEY` from step 1 |
 
-The host's `ctx.fetch` opens only the declared host and port (no wildcards), and refuses every other private
-address. The plugin also checks the configured address against the same list before it sends anything, so
-the API key never goes to a public address.
+The address **must** be one of the plugin's declared network hosts. The plugin sends its key to no other address:
 
-**Limit.** Permissions are fixed in `plugin.json`, but the harvester address is set at runtime. A harvester
-on any other host or port must be added to `plugin.json` and the plugin re-published. There is no way to
-add one from the settings page.
+| Address | Use it when |
+|---|---|
+| `http://127.0.0.1:8098` | the container from step 1 |
+| `http://127.0.0.1:18199` | a tunnel to a harvester on another machine |
+| `http://waze-reports:8088` | the harvester runs as a Compose service |
 
-## The harvester APK is never in a public image
+Any other host or port is refused. The list is fixed in the plugin's manifest, so a different host needs a new plugin release.
 
-- No Waze APK is in this repo, the plugin zip, or the harvester image. `harvester/.dockerignore` excludes
-  `*.apk`, `*.apkm`, `*.apks` and `*.xapk`.
-- The Waze installer is fetched or supplied at setup and copied into the emulator's own Android volume.
-- The harvester image build also downloads Magisk and a PlayIntegrityFix module for rooting the emulator.
-  Those are third-party tools, not the Waze APK, and they are in the image.
+If you already ran PhotoScout's own Waze setup, you can leave the address empty. The plugin then falls back to the connection in `data/waze/runtime.json`, read-only.
 
-## Build and check
+To check the connection, open **Settings → Map → Police & hazards**. It shows the harvester's status, and admins see the setup steps there. Then open the map to see the reports.
+
+### 4. (Optional) Keep the heatmap filling
+
+The heatmap fills from police sightings the plugin records while someone views the map. To keep it filling when nobody has the map open, set these in the same Settings form:
+
+- **Monitored areas:** one or more boxes, each `minLng,minLat,maxLng,maxLat`, separated by semicolons. Up to 10.
+
+  ```
+  151.10,-33.95,151.30,-33.80; 144.90,-37.85,145.05,-37.75
+  ```
+
+- **Poll every (minutes):** 1 to 1440. The default is 5.
+
+Notes:
+
+- Monitoring is **off by default**. Clear the areas to switch it off.
+- The schedule starts when the first area is saved. A changed interval takes effect only after you disable and re-enable the plugin, or restart PhotoScout. Changed areas apply at the next poll, with no restart.
+- Keep each area to a neighbourhood. The harvester scans one point per area and covers only what Waze loads around it. Boxes are widened to whole cells of about 5 km.
+- Entries that do not parse are skipped and written to the plugin's log. The other areas still run.
+
+## Requirements and gotchas
+
+- **PhotoScout** with web plugin API 2.0.0 or newer.
+- **You supply the Waze APK.** It is never in the image or the plugin. It must be Waze **5.25.0.1** exactly, as an ARM64 bundle (`.apkm`, or `.apk`), from Waze's normal download page. If you do not supply one, the container tries to download Waze itself. That can fail, or return the wrong CPU build. The container checks the APK's signature against Waze's publisher certificates and refuses anything else.
+- **`/dev/kvm` makes it usable.** With KVM, the emulator is much faster. Without it, the emulator uses software emulation, and the first boot can take 15 to 30 minutes.
+- **Resources.** Reserve about 6 GB of RAM, 4 CPUs and several GB of disk for the container. On Docker Desktop, give the VM at least that much memory.
+- **First run needs one-time screens.** A new Android volume shows Waze's welcome screens once. `/health` reports `setup_stage: needs_first_run` until they are done. [harvester/README.md](harvester/README.md) explains how to complete them.
+- **Port 8098 can be used once.** PhotoScout's own Waze setup, or a compose stack, may already publish `127.0.0.1:8098`. Stop it before you start this container.
+- **PhotoScout must reach the harvester.** From a native PhotoScout, that is `127.0.0.1:8098`.
+- **Keep the key secret.** The plugin stores it as a secret, and the settings page shows only whether one is set.
+- **The GHCR image exists only after its first build.** The `harvester-image` workflow publishes it. Until then, use the local build above.
+
+## Links
+
+- [harvester/README.md](harvester/README.md): the container in depth (runtime, APK handling, first-run screens, API).
+- Plugin registry: [kapsikkum/photoscout-plugins](https://github.com/kapsikkum/photoscout-plugins).
+- Container image: [photoscout-waze-harvester on GHCR](https://github.com/users/kapsikkum/packages/container/package/photoscout-waze-harvester).
+- Plugin release: [v1.1.0](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.1.0).
+
+## For developers
 
 ```sh
 npm install
-npm run check        # typecheck, tests, then the build
-```
-
-`npm run build` writes `dist/map.24thframe.waze-1.1.0.zip`, which holds `plugin.json`, `server.js` and `web.js`
-and nothing else. The tests include a check with PhotoScout's own validator when a PhotoScout checkout is
-beside this repo (or `PHOTOSCOUT_CLI` names its `scripts/plugin.mjs`):
-
-```sh
+npm run check        # typecheck, tests, then build dist/map.24thframe.waze-1.1.0.zip
 node ../photoscout/scripts/plugin.mjs validate .
 ```
 
-## Install
-
-In PhotoScout, an admin opens Settings, then Plugins, then "Upload plugin", and chooses the zip. Then set
-the harvester address and key on the plugin's settings page, and any areas to monitor if wanted.
-
-## Layout
+Routes, under `/api/plugins/map.24thframe.waze/`: `GET /status`, `GET /alerts` and `GET /heatmap`.
 
 | Path | What |
 |---|---|
-| `plugin.json` | manifest: id, routes the public may read, network and task permissions, settings |
-| `src/server.ts` | the plugin: routes, settings, the health probe, the monitor's registration and its settings listener |
-| `src/monitor.ts` | the scheduled area poll: the area and interval settings, and `AreaMonitor`, one pass over the areas |
-| `src/feed.ts` | harvester address rules, alert and health fetches, the 60 s scan cache |
-| `src/sightings.ts` | the police sightings table, the heatmap query, pruning, and `SightingKeeper`, which keeps fresh answers for the alerts route and the monitor |
-| `src/setup.ts` | the setup view for Settings, and the core runtime-file fallback |
-| `src/setupStart.ts` | starting the core setup helper for `POST /setup`, once at a time |
-| `src/web.ts` | the web half: legend toggles, map layers, popup, heatmap corner, Settings tab, Drive source |
-| `src/web/` | the web half's helpers: report and heatmap wording, the status text, the DOM views, the Drive rules (`drive.ts`) |
-| `src/sdk/server-api.ts` | a copy of PhotoScout's server plugin types (see below) |
-| `src/sdk/web-api.ts` | a copy of PhotoScout's web plugin API (see below) |
-| `build.mjs` | bundles `src/server.ts` to `server.js` and `src/web.ts` to `web.js`, and writes the zip |
-| `test/` | unit tests, route tests through a fake host, and a build and load smoke test |
-| `harvester/` | a verbatim copy of PhotoScout's `services/waze-harvester` |
-
-`src/sdk/server-api.ts` and `src/sdk/web-api.ts` are vendored from `@photoscout/plugin-sdk` 2.0.0 (PhotoScout's
-`packages/plugin-sdk`): the server contract at host API 1.1.0, and the web contract at web API 2.0.0. Check them
-against a PhotoScout checkout with `node ../photoscout/scripts/plugin.mjs sdk-check . --sdk ../photoscout`, and
-re-copy with `--write` when the SDK moves. Do not edit the copies.
-
-The web copy's `maplibre-gl`, `geojson` and `react` imports are type-only and are dev dependencies here.
-
-## Not done yet
-
-- **Drive, with the 2.0.0 API.** The banner uses the route ahead (`filter: 'route-ahead'`) under the host's
-  default tuning (`tuning` is not set). The warning is spoken with `speak`, keyed by report; a refusal is logged
-  when its reason changes. The status line follows the feed, the on/off button defaults to on, and the pins run
-  while planning (`runs: 'always'`). A tap on a pin opens the host's popup (`ctx.showPopup`), and the pin icons go
-  in through `ctx.addImage`. The plugin keeps its own rule that only the nearest warning within 800 m along the
-  route is spoken, because the host gates speech on the fix's age and accuracy, not on distance.
-- **Setup from the plugin** runs the core helper from the checkout (see "Setup from Settings"). It does not
-  run from the plugin zip, so an install that keeps the helper elsewhere must set `WAZE_SETUP_HELPER`.
-- **The signed-in user.** `/alerts` and `/status` read `req.user` to tell a visitor from a member and an
-  admin, because the plugin contract has no helper for that yet. A visitor is treated as the less
-  privileged case.
-- **Monitor status in the web half.** The Settings tab does not show the monitor's last run. The core task
-  list does (see "Scheduled area monitoring").
-- **Interval changes without a restart.** The host fixes a task's interval when the task is registered, so a
-  changed interval waits for the plugin to start again. Areas do not wait.
+| `plugin.json` | manifest: settings, network permissions, background task |
+| `src/server.ts`, `src/monitor.ts`, `src/feed.ts`, `src/sightings.ts` | server routes, area monitor, harvester client, heatmap store |
+| `src/web.ts`, `src/web/` | map layers, legend, popup, Drive warnings, Settings tab |
+| `src/sdk/` | vendored PhotoScout plugin types. Do not edit; re-copy with PhotoScout's `sdk-check --write`. |
+| `harvester/` | copy of PhotoScout's `services/waze-harvester` |
+| `.github/workflows/harvester-image.yml` | builds the harvester image and pushes it to GHCR |
