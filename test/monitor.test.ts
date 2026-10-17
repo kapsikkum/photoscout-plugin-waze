@@ -1,11 +1,13 @@
-// The scheduled area monitor: area and interval parsing, opt-in, the registered task, what a run records, failures,
-// deactivation and timers. Runs through the plugin's own activation against a fake host, and through AreaMonitor directly.
+// The scheduled area monitor: the checkbox, the Areas it reads from the host, the Area-to-box conversion and skips,
+// the registered task, what a run records, failures, deactivation and timers. Runs through the plugin's own activation
+// against a fake host (whose ctx.areas() the test sets), and through AreaMonitor directly.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import type { PluginArea } from '../src/sdk/server-api.js';
 import plugin from '../src/server.js';
-import { AreaMonitor, intervalMinutesOf, monitorSettingsOf, parseMonitorAreas, MONITOR_MAX_AREAS, MONITOR_TASK_ID } from '../src/monitor.js';
-import { createScanCache, declaredHarvesterHosts, resolveHarvester, type WazeBoundingBox } from '../src/feed.js';
+import { areaBox, AreaMonitor, intervalMinutesOf, monitorOn, monitorTargets, MONITOR_MAX_AREAS, MONITOR_TASK_ID } from '../src/monitor.js';
+import { createScanCache, declaredHarvesterHosts, resolveHarvester } from '../src/feed.js';
 import { openSightings, recordPoliceSightings, SightingKeeper, SIGHTING_RETENTION_MS, PRUNE_EVERY_MS } from '../src/sightings.js';
 import { activatePlugin, BOX, call, json, manifest, tempDataDir, type FetchLike } from './harness.js';
 
@@ -15,13 +17,18 @@ after(() => temps.forEach(t => t.cleanup()));
 const NOW = Date.now();
 const MINUTE = 60000;
 const DAY = 24 * 60 * MINUTE;
-const AREA_A = '151.10,-33.95,151.30,-33.80';
-const AREA_B = '144.90,-37.85,145.05,-37.75';
 const SETTINGS = { harvesterUrl: 'http://127.0.0.1:8098', harvesterKey: 'test-key' };
-const BOX_A: WazeBoundingBox = { minLng: 151.1, minLat: -33.95, maxLng: 151.3, maxLat: -33.8 };
-const BOX_B: WazeBoundingBox = { minLng: 144.9, minLat: -37.85, maxLng: 145.05, maxLat: -37.75 };
+const ON = { ...SETTINGS, monitorMyAreas: true };
 
-/** Every area's scan returns these; each area keeps only the reports inside its own box. */
+// Two Areas, each a 10 km circle round one of the police reports below. Home is the one the app lists first.
+const HOME: PluginArea = { name: 'Home', lat: -33.9, lng: 151.2, radiusKm: 10 };
+const COAST: PluginArea = { name: 'Coast', lat: -37.8, lng: 144.95, radiusKm: 10 };
+const HOME_BOX = areaBox(HOME);
+/** The map's query for the same box as the monitor's, so both reach the same 60 s cache entry. */
+const HOME_QUERY = { minLng: String(HOME_BOX.minLng), minLat: String(HOME_BOX.minLat), maxLng: String(HOME_BOX.maxLng), maxLat: String(HOME_BOX.maxLat) };
+const COAST_BOX = areaBox(COAST);
+
+/** Every scan returns these; each Area keeps only the reports inside its own box. */
 const ALERTS = [
   { id: 'police-a', type: 'POLICE', point: [151.2, -33.9], reportTime: NOW },
   { id: 'police-b', type: 'POLICE', point: [144.95, -37.8], reportTime: NOW },
@@ -47,10 +54,10 @@ function fakeHarvester(start: { down?: boolean; failIf?: (minLng: number) => boo
   return { fetchFn, requests, state };
 }
 
-function startPlugin(settings: Record<string, unknown>, fetchFn?: FetchLike) {
+function startPlugin(settings: Record<string, unknown>, fetchFn?: FetchLike, areas: PluginArea[] = [HOME]) {
   const temp = tempDataDir();
   temps.push(temp);
-  return activatePlugin({ settings, fetchFn, dataDir: temp.dataDir });
+  return activatePlugin({ settings, fetchFn, areas, dataDir: temp.dataDir });
 }
 
 function rowCount(db: DatabaseSync): number {
@@ -59,35 +66,33 @@ function rowCount(db: DatabaseSync): number {
 
 const harvesterFor = () => resolveHarvester(SETTINGS.harvesterUrl, SETTINGS.harvesterKey, declaredHarvesterHosts(manifest.permissions)).harvester!;
 
-// Parsing
+// The checkbox and the settings it declares
 
-test('areas parse from semicolon- or newline-separated boxes, with spaces allowed', () => {
-  const parsed = parseMonitorAreas(`${AREA_A}; ${AREA_B}\n-0.2,51.4,0.1,51.6;`);
-  assert.equal(parsed.areas.length, 3);
-  assert.deepEqual(parsed.areas[0], BOX_A);
-  assert.deepEqual(parsed.problems, []);
+test('monitoring is a checkbox that is off by default: only the boolean true turns it on', () => {
+  const box = (manifest.settings ?? []).find(f => f.key === 'monitorMyAreas') as { type: string; default?: unknown } | undefined;
+  assert.equal(box?.type, 'boolean');
+  assert.equal(box?.default, false);
+  assert.equal(monitorOn({}), false);
+  assert.equal(monitorOn({ monitorMyAreas: 'true' }), false, 'a string is not the checkbox');
+  assert.equal(monitorOn({ monitorMyAreas: false }), false);
+  assert.equal(monitorOn({ monitorMyAreas: true }), true);
 });
 
-test('a bad area is reported and skipped; the good ones are still monitored', () => {
-  const parsed = parseMonitorAreas(`151.3,-33.95,151.1,-33.8; 151,-33; abc,1,2,3; ${AREA_A}; 181,0,182,1; ${AREA_A}`);
-  assert.deepEqual(parsed.areas, [BOX_A]);
-  assert.equal(parsed.problems.length, 5, 'min above max, too few numbers, not numbers, out of range, listed twice');
-  assert.match(parsed.problems[3], /needs min below max/);
-  assert.match(parsed.problems[4], /listed twice/);
+test('the text list of boxes is gone, and the interval declares its default and range', () => {
+  assert.equal((manifest.settings ?? []).some(f => f.key === 'monitorAreas'), false);
+  const interval = (manifest.settings ?? []).find(f => f.key === 'monitorIntervalMinutes') as { type: string; default?: number; min?: number; max?: number } | undefined;
+  assert.equal(interval?.type, 'number');
+  assert.equal(interval?.default, 5);
+  assert.equal(interval?.min, 1);
+  assert.equal(interval?.max, 1440);
 });
 
-test('no more than the area limit is monitored, and the rest are reported', () => {
-  const many = Array.from({ length: MONITOR_MAX_AREAS + 2 }, (_, i) => `${10 + i},0,${11 + i},1`).join(';');
-  const parsed = parseMonitorAreas(many);
-  assert.equal(parsed.areas.length, MONITOR_MAX_AREAS);
-  assert.equal(parsed.problems.length, 2);
-  assert.match(parsed.problems[0], /past the limit/);
+test('the plugin needs PhotoScout 1.2, the host version that gives it ctx.areas()', () => {
+  assert.equal(manifest.photoscout, '^1.2');
 });
 
-test('missing or empty areas parse to nothing and report nothing', () => {
-  for (const text of [undefined, null, '', ' ; \n ']) {
-    assert.deepEqual(parseMonitorAreas(text), { areas: [], problems: [] });
-  }
+test('the manifest discloses the background poll as a tasks permission', () => {
+  assert.ok((manifest.permissions ?? []).some(p => p.kind === 'tasks' && /record police sightings/.test(p.detail ?? '')));
 });
 
 test('the interval is at least one minute and at most a day, and a missing or unreadable one is five minutes', () => {
@@ -102,51 +107,106 @@ test('the interval is at least one minute and at most a day, and a missing or un
   assert.equal(intervalMinutesOf(5000), 1440);
 });
 
-// Opt-in and the settings it declares
+// Area to box: the conversion and what is skipped
 
-test('monitoring is opt-in: no areas by default, and the interval setting declares its default and range', () => {
-  const areas = (manifest.settings ?? []).find(f => f.key === 'monitorAreas') as { type: string; default?: unknown } | undefined;
-  assert.equal(areas?.type, 'string');
-  assert.equal(areas?.default, undefined, 'no area is set by default');
-  assert.deepEqual(monitorSettingsOf({}).areas, []);
-  const interval = (manifest.settings ?? []).find(f => f.key === 'monitorIntervalMinutes') as { type: string; default?: number; min?: number; max?: number } | undefined;
-  assert.equal(interval?.type, 'number');
-  assert.equal(interval?.default, 5);
-  assert.equal(interval?.min, 1);
-  assert.equal(interval?.max, 1440);
+test('an Area becomes a box about its centre, its radius each way in kilometres', () => {
+  assert.deepEqual(areaBox({ name: 'Equator', lat: 0, lng: 0, radiusKm: 111.32 }), { minLng: -1, minLat: -1, maxLng: 1, maxLat: 1 });
+  // At 60 degrees a degree of longitude is half as long, so the box reaches twice as far east and west.
+  const high = areaBox({ name: 'High', lat: 60, lng: 10, radiusKm: 111.32 });
+  assert.equal(high.minLat, 59);
+  assert.equal(high.maxLat, 61);
+  assert.ok(Math.abs(high.maxLng - 12) < 1e-9 && Math.abs(high.minLng - 8) < 1e-9, JSON.stringify(high));
 });
 
-test('the manifest discloses the background poll as a tasks permission', () => {
-  assert.ok((manifest.permissions ?? []).some(p => p.kind === 'tasks' && /record police sightings/.test(p.detail ?? '')));
+test('near a pole the box spans every longitude, and a box past the world edge is trimmed to it', () => {
+  const pole = areaBox({ name: 'Pole', lat: 90, lng: 0, radiusKm: 50 });
+  assert.equal(pole.minLng, -180);
+  assert.equal(pole.maxLng, 180);
+  assert.equal(pole.maxLat, 90, 'trimmed to the north pole');
+  assert.ok(Math.abs(pole.minLat - (90 - 50 / 111.32)) < 1e-9);
+  const dateline = areaBox({ name: 'Dateline', lat: 0, lng: 179.99, radiusKm: 50 });
+  assert.equal(dateline.maxLng, 180);
+  assert.ok(dateline.minLng < 179.99);
 });
 
-test('with no areas set, no task is registered and the harvester is never asked', async () => {
+test('an Area that cannot be scanned is skipped with the reason, and the others are still kept', () => {
+  const areas: PluginArea[] = [
+    { name: 'Zero', lat: -33.9, lng: 151.2, radiusKm: 0 },
+    { name: '', lat: 200, lng: 0, radiusKm: 5 },
+    { name: 'Nan', lat: 0, lng: 0, radiusKm: Number.NaN },
+    HOME,
+  ];
+  const { targets, problems } = monitorTargets(areas);
+  assert.deepEqual(targets.map(t => t.label), ['Home']);
+  assert.deepEqual(problems, [
+    'Zero: its radius is not above zero. It is not scanned.',
+    'area 2: its centre is not a valid latitude and longitude. It is not scanned.',
+    'Nan: its radius is not above zero. It is not scanned.',
+  ]);
+});
+
+test('a box the world cannot hold at that latitude is skipped, as validateWazeBounds rejects it', () => {
+  // A radius so small that the box has no height left at 60 degrees: min latitude equals max latitude.
+  const { targets, problems } = monitorTargets([{ name: 'Pin', lat: 60, lng: 10, radiusKm: 1e-300 }]);
+  assert.deepEqual(targets, []);
+  assert.deepEqual(problems, ['Pin: the box it makes is too small to scan at this latitude. It is not scanned.']);
+});
+
+test('a large Area, within the 1000 km the app allows, is kept whole: nothing rejects it for its span', () => {
+  const { targets, problems } = monitorTargets([{ name: 'Wide', lat: -33.9, lng: 151.2, radiusKm: 1000 }]);
+  assert.equal(targets.length, 1);
+  assert.deepEqual(problems, []);
+  assert.ok(Math.abs((targets[0].box.maxLat - targets[0].box.minLat) - 2000 / 111.32) < 1e-9);
+});
+
+test('two Areas with the same box are scanned once, and the second is reported', () => {
+  const { targets, problems } = monitorTargets([HOME, { ...HOME, name: 'Home again' }]);
+  assert.deepEqual(targets.map(t => t.label), ['Home']);
+  assert.deepEqual(problems, ['Home again has the same box as Home. It is not scanned.']);
+});
+
+test('no more than the area limit is scanned, home first, and the rest are reported', () => {
+  const many: PluginArea[] = Array.from({ length: MONITOR_MAX_AREAS + 2 }, (_, i) => ({ name: `Area ${i + 1}`, lat: -30 - i, lng: 150, radiusKm: 5 }));
+  const { targets, problems } = monitorTargets(many);
+  assert.equal(targets.length, MONITOR_MAX_AREAS);
+  assert.equal(targets[0].label, 'Area 1');
+  assert.equal(targets[MONITOR_MAX_AREAS - 1].label, `Area ${MONITOR_MAX_AREAS}`);
+  assert.equal(problems.length, 2);
+  assert.match(problems[0], /^Area 11 is past the limit of 10 areas/);
+});
+
+test('no Areas gives nothing to scan and nothing to report', () => {
+  assert.deepEqual(monitorTargets([]), { targets: [], problems: [] });
+});
+
+// Scheduling: the checkbox registers the task, and each run reads the Areas
+
+test('with the checkbox off, no task is registered, the Areas are not read and the harvester is never asked', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: '' }, h.fetchFn);
+  const p = await startPlugin({ ...SETTINGS, monitorMyAreas: false }, h.fetchFn, [HOME, COAST]);
   assert.equal(p.registered.length, 0);
+  assert.equal(p.areaReads(), 0);
   assert.equal(h.requests.length, 0);
 });
 
-test('with areas set but no harvester, the task is registered and its run says the harvester is not set up', async () => {
-  const p = await startPlugin({ monitorAreas: AREA_A });
+test('with the checkbox on but no harvester, the task is registered and its run says the harvester is not set up', async () => {
+  const p = await startPlugin({ monitorMyAreas: true });
   assert.equal(p.registered.length, 1);
   const result = await p.registered[0].run(() => {});
   assert.equal(result.ok, false);
   assert.match(result.message, /Set up Waze/);
 });
 
-// Scheduling
-
-test('with areas set, one task is registered at the chosen interval; a run polls each area and records its police reports', async () => {
+test('with the checkbox on, one task is registered at the chosen interval, and a run scans each configured Area and records its police reports', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: `${AREA_A}; ${AREA_B}`, monitorIntervalMinutes: 10 }, h.fetchFn);
+  const p = await startPlugin({ ...ON, monitorIntervalMinutes: 10 }, h.fetchFn, [HOME, COAST]);
   assert.equal(p.registered.length, 1);
   assert.equal(p.registered[0].id, MONITOR_TASK_ID);
   assert.equal(p.registered[0].intervalMinutes, 10);
   const log: string[] = [];
   const result = await p.registered[0].run(line => { log.push(line); });
   assert.deepEqual(result, { ok: true, message: '2 of 2 areas polled, 2 police reports recorded' });
-  assert.equal(log.length, 2, 'one line per area');
+  assert.deepEqual(log, ['Home: 2 reports, 1 police recorded', 'Coast: 1 reports, 1 police recorded']);
   assert.equal(h.requests.length, 2);
   assert.equal(rowCount(p.db), 2);
   const heat = await call(p.router, '/heatmap', BOX);
@@ -154,46 +214,78 @@ test('with areas set, one task is registered at the chosen interval; a run polls
 });
 
 test('an interval below one minute is raised to one, and a missing one is five', async () => {
-  const low = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A, monitorIntervalMinutes: 0 }, fakeHarvester().fetchFn);
+  const low = await startPlugin({ ...ON, monitorIntervalMinutes: 0 }, fakeHarvester().fetchFn);
   assert.equal(low.registered[0].intervalMinutes, 1);
-  const missing = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, fakeHarvester().fetchFn);
+  const missing = await startPlugin(ON, fakeHarvester().fetchFn);
   assert.equal(missing.registered[0].intervalMinutes, 5);
 });
 
-test('areas are read again on every run, so a changed area is polled at the next run', async () => {
+test('the Areas are read on every run, so a changed Area list is polled at the next run', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, h.fetchFn);
-  p.changeSettings({ ...SETTINGS, monitorAreas: AREA_B });
-  await p.registered[0].run(() => {});
+  const p = await startPlugin(ON, h.fetchFn, [HOME]);
+  p.setAreas([COAST]);
+  const result = await p.registered[0].run(() => {});
+  assert.equal(result.ok, true);
   assert.equal(h.requests.length, 1);
-  assert.equal(Number(h.requests[0].searchParams.get('minLng')), 144.9, 'asked for the area on the 0.05 degree grid');
-  assert.equal(p.registered.length, 1, 'changing the areas does not register a second task');
+  assert.equal(Number(h.requests[0].searchParams.get('minLng')), 144.8, 'asked for the Coast box, on the 0.05 degree grid');
+  assert.equal(p.areaReads(), 1);
+  await p.registered[0].run(() => {});
+  assert.equal(p.areaReads(), 2, 'the Areas are read again on the next run');
+  assert.equal(p.registered.length, 1, 'changing the Areas does not register a second task');
+});
+
+test('turning the checkbox off makes a run return at once; turning it back on resumes the polls', async () => {
+  const h = fakeHarvester();
+  const p = await startPlugin(ON, h.fetchFn, [HOME]);
+  p.changeSettings({ ...SETTINGS, monitorMyAreas: false });
+  const reads = p.areaReads();
+  const off = await p.registered[0].run(() => {});
+  assert.deepEqual(off, { ok: true, message: 'Skipped: monitoring is off' });
+  assert.equal(p.areaReads(), reads, 'no Areas are read while it is off');
+  assert.equal(h.requests.length, 0);
+  assert.equal(rowCount(p.db), 0);
+  assert.equal(p.registered.length, 1, 'the task stays registered; only its run is a no-op');
+
+  p.changeSettings(ON);
+  await p.registered[0].run(() => {});
+  assert.equal(h.requests.length, 1, 'it polls again once the checkbox is back on');
+  assert.equal(p.registered.length, 1, 'turning it back on does not register again');
+});
+
+test('ticking the checkbox after activation registers the task then, at the interval set at that moment', async () => {
+  const p = await startPlugin({ ...SETTINGS, monitorMyAreas: false }, fakeHarvester().fetchFn);
+  assert.equal(p.registered.length, 0);
+  p.changeSettings({ ...SETTINGS, monitorMyAreas: true, monitorIntervalMinutes: 15 });
+  assert.equal(p.registered.length, 1);
+  assert.equal(p.registered[0].intervalMinutes, 15);
 });
 
 test('a changed interval does not re-register the task; it says the new interval applies after a restart', async () => {
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A, monitorIntervalMinutes: 5 }, fakeHarvester().fetchFn);
-  p.changeSettings({ ...SETTINGS, monitorAreas: AREA_A, monitorIntervalMinutes: 30 });
+  const p = await startPlugin({ ...ON, monitorIntervalMinutes: 5 }, fakeHarvester().fetchFn);
+  p.changeSettings({ ...ON, monitorIntervalMinutes: 30 });
   assert.equal(p.registered.length, 1);
   assert.equal(p.registered[0].intervalMinutes, 5, 'the registered interval is fixed');
   assert.ok(p.lines.some(l => l.level === 'info' && /keeps its 5-minute schedule until the plugin restarts; 30 minutes applies then/.test(l.msg)));
 });
 
-test('areas added after activation register the task then, with the interval set at that moment', async () => {
-  const p = await startPlugin({ ...SETTINGS }, fakeHarvester().fetchFn);
-  assert.equal(p.registered.length, 0);
-  p.changeSettings({ ...SETTINGS, monitorAreas: AREA_A, monitorIntervalMinutes: 15 });
-  assert.equal(p.registered.length, 1);
-  assert.equal(p.registered[0].intervalMinutes, 15);
+test('no Areas, or an Area list that cannot be read, is a run that does nothing: not an error, and no harvester request', async () => {
+  const h = fakeHarvester();
+  const p = await startPlugin(ON, h.fetchFn, []);
+  const result = await p.registered[0].run(() => {});
+  assert.deepEqual(result, { ok: true, message: 'Skipped: no areas to scan' });
+  assert.equal(h.requests.length, 0);
+  assert.equal(rowCount(p.db), 0);
+  assert.equal(p.areaReads(), 1);
 });
 
-test('invalid areas are logged at activation and again on each run, and the valid ones are still polled', async () => {
+test('an Area that cannot be scanned is logged on each run, and the others are still polled', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: `junk; ${AREA_A}` }, h.fetchFn);
-  assert.ok(p.lines.some(l => l.level === 'warn' && /Monitored areas: "junk" is not four numbers/.test(l.msg)));
+  const zero: PluginArea = { name: 'Zero', lat: -33.9, lng: 151.2, radiusKm: 0 };
+  const p = await startPlugin(ON, h.fetchFn, [zero, HOME]);
   const log: string[] = [];
   const result = await p.registered[0].run(line => { log.push(line); });
-  assert.equal(result.ok, true);
-  assert.ok(log.some(line => /^Ignored: "junk"/.test(line)));
+  assert.deepEqual(result, { ok: true, message: '1 of 1 areas polled, 1 police reports recorded' });
+  assert.equal(log[0], 'Zero: its radius is not above zero. It is not scanned.');
   assert.equal(h.requests.length, 1);
 });
 
@@ -201,8 +293,8 @@ test('invalid areas are logged at activation and again on each run, and the vali
 
 test('a map view and the monitor share the 60 s cache: the monitor is answered from it and records nothing twice', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, h.fetchFn);
-  await call(p.router, '/alerts', BOX);
+  const p = await startPlugin(ON, h.fetchFn, [HOME]);
+  await call(p.router, '/alerts', HOME_QUERY);
   assert.equal(rowCount(p.db), 1);
   const before = h.requests.length;
   const result = await p.registered[0].run(() => {});
@@ -213,39 +305,39 @@ test('a map view and the monitor share the 60 s cache: the monitor is answered f
 
 test('a monitor poll fills the cache, so a map view that follows is served from it', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, h.fetchFn);
+  const p = await startPlugin(ON, h.fetchFn, [HOME]);
   await p.registered[0].run(() => {});
   const before = h.requests.length;
-  const map = await call(p.router, '/alerts', BOX);
+  const map = await call(p.router, '/alerts', HOME_QUERY);
   assert.equal(map.json.fromCache, true);
   assert.equal(h.requests.length, before);
 });
 
 // Failures
 
-test('a harvester that is down stops the run at the first area, and the message says why', async () => {
+test('a harvester that is down stops the run at the first Area, and the message names it', async () => {
   const h = fakeHarvester({ down: true });
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: `${AREA_A}; ${AREA_B}` }, h.fetchFn);
+  const p = await startPlugin(ON, h.fetchFn, [HOME, COAST]);
   const log: string[] = [];
   const result = await p.registered[0].run(line => { log.push(line); });
   assert.equal(result.ok, false);
-  assert.equal(result.message, '0 of 2 areas polled; stopped at 151.1,-33.95,151.3,-33.8: fetch failed');
-  assert.equal(h.requests.length, 1, 'the second area is not asked once the first has failed');
+  assert.equal(result.message, '0 of 2 areas polled; stopped at Home: fetch failed');
+  assert.equal(h.requests.length, 1, 'the second Area is not asked once the first has failed');
   assert.equal(rowCount(p.db), 0);
   assert.equal(log.length, 1);
 });
 
-test('after a failing area, the next run starts with the area after it, so no area is starved', async () => {
+test('after a failing Area, the next run starts with the Area after it, so no Area is starved', async () => {
   const h = fakeHarvester({ failIf: minLng => minLng > 150 });
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: `${AREA_A}; ${AREA_B}` }, h.fetchFn);
+  const p = await startPlugin(ON, h.fetchFn, [HOME, COAST]);
   const first = await p.registered[0].run(() => {});
   assert.equal(first.ok, false);
-  assert.match(first.message, /stopped at 151\.1,-33\.95,151\.3,-33\.8: Waze report bridge returned HTTP 503/);
+  assert.match(first.message, /stopped at Home: Waze report bridge returned HTTP 503/);
   const before = h.requests.length;
   h.state.failIf = () => false;
   const second = await p.registered[0].run(() => {});
   assert.equal(second.ok, true);
-  assert.equal(Number(h.requests[before].searchParams.get('minLng')), 144.9, 'the next run asks area B first');
+  assert.equal(Number(h.requests[before].searchParams.get('minLng')), 144.8, 'the next run asks Coast first');
   assert.equal(rowCount(p.db), 2);
 });
 
@@ -253,7 +345,7 @@ test('after a failing area, the next run starts with the area after it, so no ar
 
 test('deactivation stops the monitor: a later run asks nothing and records nothing', async () => {
   const h = fakeHarvester();
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, h.fetchFn);
+  const p = await startPlugin(ON, h.fetchFn, [HOME]);
   plugin.deactivate?.();
   const result = await p.registered[0].run(() => {});
   assert.deepEqual(result, { ok: false, message: 'The plugin has stopped' });
@@ -264,10 +356,10 @@ test('a poll still in flight when the plugin is deactivated records nothing from
   const h = fakeHarvester();
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, async (input, init) => {
+  const p = await startPlugin(ON, async (input, init) => {
     await gate;
     return h.fetchFn(input, init);
-  });
+  }, [HOME]);
   const running = p.registered[0].run(() => {});
   await new Promise(resolve => setImmediate(resolve));
   plugin.deactivate?.();
@@ -281,7 +373,7 @@ test('a poll still in flight when the plugin is deactivated records nothing from
 test('the monitor starts no timers of its own: the host runs the schedule', async (t) => {
   const interval = t.mock.method(globalThis, 'setInterval');
   const timeout = t.mock.method(globalThis, 'setTimeout');
-  const p = await startPlugin({ ...SETTINGS, monitorAreas: AREA_A }, fakeHarvester().fetchFn);
+  const p = await startPlugin(ON, fakeHarvester().fetchFn, [HOME]);
   await p.registered[0].run(() => {});
   plugin.deactivate?.();
   assert.equal(interval.mock.callCount(), 0);
@@ -290,7 +382,7 @@ test('the monitor starts no timers of its own: the host runs the schedule', asyn
 
 // AreaMonitor directly: queued waits and the time budget
 
-test('a queued area is asked again after the harvester asks to wait, and is skipped without failing the run when it stays queued', async () => {
+test('a queued Area is asked again after the harvester asks to wait, and is skipped without failing the run when it stays queued', async () => {
   const db = new DatabaseSync(':memory:');
   openSightings(db);
   const waits: number[] = [];
@@ -301,7 +393,7 @@ test('a queued area is asked again after the harvester asks to wait, and is skip
   };
   const monitor = new AreaMonitor({ keeper: new SightingKeeper(db), cache: createScanCache(), fetchFn,
     harvester: () => ({ harvester: harvesterFor(), problem: null }), sleep: async ms => { waits.push(ms); } });
-  const result = await monitor.poll([BOX_A], () => {});
+  const result = await monitor.poll([{ label: 'Home', box: HOME_BOX }], () => {});
   assert.deepEqual(result, { ok: true, message: '1 of 1 areas polled, 1 police reports recorded' });
   assert.deepEqual(waits, [5000, 5000], 'the harvester asked for five seconds each time');
 
@@ -309,12 +401,12 @@ test('a queued area is asked again after the harvester asks to wait, and is skip
     fetchFn: async () => json({ alerts: [], state: 'queued', observedAt: null, mock: false }, 202),
     harvester: () => ({ harvester: harvesterFor(), problem: null }), sleep: async () => {} });
   const lines: string[] = [];
-  const skipped = await stuck.poll([BOX_B], line => { lines.push(line); });
+  const skipped = await stuck.poll([{ label: 'Coast', box: COAST_BOX }], line => { lines.push(line); });
   assert.deepEqual(skipped, { ok: true, message: '0 of 1 areas polled, 0 police reports recorded' });
-  assert.match(lines[0], /still queued at the harvester after 3 asks/);
+  assert.match(lines[0], /^Coast: still queued at the harvester after 3 asks/);
 });
 
-test('one poll never starts a new area after its time budget is spent', async () => {
+test('one poll never starts a new Area after its time budget is spent', async () => {
   const db = new DatabaseSync(':memory:');
   openSightings(db);
   let clock = NOW;
@@ -324,7 +416,7 @@ test('one poll never starts a new area after its time budget is spent', async ()
   };
   const monitor = new AreaMonitor({ keeper: new SightingKeeper(db), cache: createScanCache(), fetchFn,
     harvester: () => ({ harvester: harvesterFor(), problem: null }), now: () => clock, sleep: async () => {} });
-  const result = await monitor.poll([BOX_A, BOX_B], () => {});
+  const result = await monitor.poll([{ label: 'Home', box: HOME_BOX }, { label: 'Coast', box: COAST_BOX }], () => {});
   assert.deepEqual(result, { ok: true, message: '1 of 2 areas polled; the rest wait for the next poll' });
   assert.equal(rowCount(db), 1);
 });

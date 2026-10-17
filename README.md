@@ -49,7 +49,7 @@ Other ways to start it:
 1. In PhotoScout, as an admin, open **Settings → Admin → Plugins**.
 2. Install the plugin one of two ways:
    - **Browse:** find **Waze police & hazards** (`map.24thframe.waze`) in the default registry, and install it.
-   - **Install manually:** download `map.24thframe.waze-1.1.0.zip` from the [v1.1.0 release](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.1.0), and choose it.
+   - **Install manually:** download `map.24thframe.waze-1.2.0.zip` from the [v1.2.0 release](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.2.0), and choose it.
 3. Read the permissions the install dialog lists (the harvester's network hosts, the API key, storage and a background task), then accept.
 4. Under **Installed**, make sure the plugin is switched on.
 
@@ -80,24 +80,21 @@ To check the connection, open **Settings → Map → Police & hazards**. It show
 
 The heatmap fills from police sightings the plugin records while someone views the map. To keep it filling when nobody has the map open, set these in the same Settings form:
 
-- **Monitored areas:** one or more boxes, each `minLng,minLat,maxLng,maxLat`, separated by semicolons. Up to 10.
-
-  ```
-  151.10,-33.95,151.30,-33.80; 144.90,-37.85,145.05,-37.75
-  ```
-
-- **Poll every (minutes):** 1 to 1440. The default is 5.
+- **Monitor my areas on a schedule:** tick the box. The plugin then scans each area you have set up in PhotoScout, under **Settings → Map → Areas**, and records police reports for the heatmap.
+- **Poll every (minutes):** 1 to 1440, default 5. It applies only while the box is ticked.
 
 Notes:
 
-- Monitoring is **off by default**. Clear the areas to switch it off.
-- The schedule starts when the first area is saved. A changed interval takes effect only after you disable and re-enable the plugin, or restart PhotoScout. Changed areas apply at the next poll, with no restart.
-- Keep each area to a neighbourhood. The harvester scans one point per area and covers only what Waze loads around it. Boxes are widened to whole cells of about 5 km.
-- Entries that do not parse are skipped and written to the plugin's log. The other areas still run.
+- Monitoring is **off by default**. Untick the box to stop it.
+- The harvester from step 1 must be running and set up. Without it, each scheduled run reports that the harvester is not set up.
+- Each area is scanned as a box around its centre, reaching its radius each way. The home area is always scanned. At most 10 areas are scanned per run; any beyond that are written to the plugin's log and skipped.
+- An area that cannot be scanned (for example, a zero radius) is skipped and written to the plugin's log. The other areas still run.
+- The interval is set when monitoring first turns on. A changed interval takes effect only after you disable and re-enable the plugin, or restart PhotoScout. Changes to your areas apply at the next poll, with no restart.
+- Keep areas to a neighbourhood. The harvester covers only what Waze loads around each area's box, and boxes are widened to whole cells of about 5 km.
 
 ## Requirements and gotchas
 
-- **PhotoScout** with web plugin API 2.0.0 or newer.
+- **PhotoScout** with web plugin API 2.0.0 or newer, and server plugin API 1.2.0 or newer (the area monitor reads your Areas through it).
 - **You supply the Waze APK.** It is never in the image or the plugin. It must be Waze **5.25.0.1** exactly, as an ARM64 bundle (`.apkm`, or `.apk`), from Waze's normal download page. If you do not supply one, the container tries to download Waze itself. That can fail, or return the wrong CPU build. The container checks the APK's signature against Waze's publisher certificates and refuses anything else.
 - **`/dev/kvm` makes it usable.** With KVM, the emulator is much faster. Without it, the emulator uses software emulation, and the first boot can take 15 to 30 minutes.
 - **Resources.** Reserve about 6 GB of RAM, 4 CPUs and several GB of disk for the container. On Docker Desktop, give the VM at least that much memory.
@@ -112,13 +109,13 @@ Notes:
 - [harvester/README.md](harvester/README.md): the container in depth (runtime, APK handling, first-run screens, API).
 - Plugin registry: [kapsikkum/photoscout-plugins](https://github.com/kapsikkum/photoscout-plugins).
 - Container image: [photoscout-waze-harvester on GHCR](https://github.com/users/kapsikkum/packages/container/package/photoscout-waze-harvester).
-- Plugin release: [v1.1.0](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.1.0).
+- Plugin release: [v1.2.0](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.2.0).
 
 ## For developers
 
 ```sh
 npm install
-npm run check        # typecheck, tests, then build dist/map.24thframe.waze-1.1.0.zip
+npm run check        # typecheck, tests, then build dist/map.24thframe.waze-1.2.0.zip
 node ../photoscout/scripts/plugin.mjs validate .
 ```
 

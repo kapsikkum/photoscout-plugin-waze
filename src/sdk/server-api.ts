@@ -15,8 +15,9 @@ import type { DatabaseSync } from 'node:sqlite';
  * against this constant. It is independent of the browser API's WEB_API_VERSION (`@photoscout/plugin-sdk/web`),
  * which a bundle reads from `host.apiVersion`. See docs/plugins/web-api-design.md, "Versions".
  * 1.1.0 accepts a .mjs web bundle (1.0.0 accepted only .js).
+ * 1.2.0 adds `ctx.areas()` and the `PluginArea` type (additive): a plugin that calls it says `"photoscout": "^1.2"`.
  */
-export const HOST_API_VERSION = '1.1.0';
+export const HOST_API_VERSION = '1.2.0';
 
 export type PermissionKind = 'network' | 'secrets' | 'realtime' | 'llm' | 'tasks' | 'storage';
 
@@ -69,6 +70,17 @@ export interface PluginTaskDef {
   run(log: (msg: string) => void): Promise<{ ok: boolean; message: string }>;
 }
 
+/**
+ * One of the instance's configured Areas, as a plugin sees it: where it is and how far it reaches.
+ * The events and busy switches an Area also carries are not part of this.
+ */
+export interface PluginArea {
+  name: string;
+  lat: number;
+  lng: number;
+  radiusKm: number;
+}
+
 export interface PluginContext {
   manifest: PluginManifest;
   /** Mounted at /api/plugins/<id>/ */
@@ -96,6 +108,13 @@ export interface PluginContext {
   dataDir: string;
   log: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
   services: { url(name: string): string | null };
+  /**
+   * The instance's configured Areas: the home area first, then the others in the order the admin set them.
+   * Read-only, and current at call time: each call reads the settings again, so a poll sees the Areas as they
+   * are now. The result is a fresh frozen copy, so a plugin cannot change the stored Areas through it.
+   * If the Areas cannot be read, this returns [] rather than throwing.
+   */
+  areas(): readonly PluginArea[];
 }
 
 export interface ServerPlugin {

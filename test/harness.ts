@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { PluginContext, PluginManifest, PluginTaskDef } from '../src/sdk/server-api.js';
+import type { PluginArea, PluginContext, PluginManifest, PluginTaskDef } from '../src/sdk/server-api.js';
 import plugin from '../src/server.js';
 
 export const ROOT = path.resolve(import.meta.dirname, '..');
@@ -46,6 +46,8 @@ export interface ActivateOptions {
   settings?: Record<string, unknown>;
   fetchFn?: FetchLike;
   dataDir?: string;
+  /** The instance's configured Areas, as ctx.areas() returns them. */
+  areas?: PluginArea[];
 }
 
 /** A fake PluginContext over a fake router and an in-memory database, with a settings hook the test can drive. */
@@ -57,6 +59,8 @@ export function fakeContext(opts: ActivateOptions = {}) {
   /** The tasks the plugin registered, and the log lines it wrote, for the tests to read. */
   const registered: PluginTaskDef[] = [];
   const lines: { level: 'info' | 'warn' | 'error'; msg: string }[] = [];
+  let areas: PluginArea[] = (opts.areas ?? []).map(a => ({ ...a }));
+  let areaReads = 0;
   const ctx = {
     manifest,
     router,
@@ -87,6 +91,11 @@ export function fakeContext(opts: ActivateOptions = {}) {
       error: (msg: string) => { lines.push({ level: 'error', msg }); },
     },
     services: { url: () => null },
+    // As the host states it: a fresh frozen copy of the Areas, read at call time.
+    areas: () => {
+      areaReads += 1;
+      return Object.freeze(areas.map(a => Object.freeze({ ...a })));
+    },
   } as unknown as PluginContext;
   return {
     ctx, router, db, settings, registered, lines,
@@ -96,6 +105,12 @@ export function fakeContext(opts: ActivateOptions = {}) {
       Object.assign(settings, next);
       for (const fn of listeners) fn({ ...next });
     },
+    /** Replace the configured Areas, as the admin does in the app. Takes effect at the next ctx.areas() call. */
+    setAreas(next: PluginArea[]) {
+      areas = next.map(a => ({ ...a }));
+    },
+    /** How many times the plugin has read the Areas. */
+    areaReads: () => areaReads,
   };
 }
 

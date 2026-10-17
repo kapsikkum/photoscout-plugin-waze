@@ -1,12 +1,12 @@
 {
   "id": "map.24thframe.waze",
   "name": "Waze police & hazards",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Police, hazard and road reports from Waze, read from a self-hosted harvester, with a police heatmap built from sightings it has seen.",
   "author": "PhotoScout",
   "homepage": "https://www.waze.com",
   "category": "map",
-  "photoscout": "^1.0",
+  "photoscout": "^1.2",
   "server": "server.js",
   "web": "web.js",
   "public": ["/status", "/alerts", "/heatmap"],
@@ -16,7 +16,7 @@
     { "kind": "network", "detail": "waze-reports:8088" },
     { "kind": "secrets", "detail": "The harvester API key, sent only to the harvester at one of the hosts above" },
     { "kind": "storage", "detail": "Police sightings for the heatmap, kept for seven days in the plugin's own database" },
-    { "kind": "tasks", "detail": "Polls the monitored areas on a schedule, in the background, to record police sightings for the heatmap. Off until areas are set" }
+    { "kind": "tasks", "detail": "Polls the Areas set up in the app on a schedule, in the background, to record police sightings for the heatmap. Runs only while Monitor my areas is on" }
   ],
   "settings": [
     {
@@ -32,16 +32,17 @@
       "help": "The harvester's SERVICE_API_KEY, sent as X-API-Key to that address only. Stored as a secret: the settings page shows only whether one is set."
     },
     {
-      "key": "monitorAreas",
-      "type": "string",
-      "label": "Monitored areas",
-      "help": "Optional. Areas the plugin polls on a schedule, so police reports are recorded for the heatmap when nobody has the map open. Each area is minLng,minLat,maxLng,maxLat (the map's box order), and areas are separated by semicolons, for example 151.10,-33.95,151.30,-33.80; 144.90,-37.85,145.05,-37.75. Up to 10. Leave empty to switch monitoring off."
+      "key": "monitorMyAreas",
+      "type": "boolean",
+      "label": "Monitor my areas on a schedule",
+      "help": "Off by default. When on, the plugin scans each area you have set up in the app (Settings → Map → Areas) on the interval below, in the background, and records police reports for the heatmap, so it keeps filling with no map open. Needs the harvester above to be running.",
+      "default": false
     },
     {
       "key": "monitorIntervalMinutes",
       "type": "number",
       "label": "Poll every (minutes)",
-      "help": "How often the monitored areas are polled, from 1 to 1440 minutes. The schedule is set when the first area is saved, so after changing this, disable and enable the plugin (or restart the server) for the new interval to apply.",
+      "help": "How often your Areas are scanned, from 1 to 1440 minutes. It applies only while the checkbox above is on. The schedule is set the first time monitoring is on, so after changing this, disable and enable the plugin (or restart the server) for the new interval to apply.",
       "default": 5,
       "min": 1,
       "max": 1440

@@ -231,7 +231,7 @@ export function fakeHost(respond: (path: string, init?: RequestInit) => unknown)
   const host = {
     id: PLUGIN_ID,
     name: 'Waze police & hazards',
-    version: '1.1.0',
+    version: '1.2.0',
     apiVersion: '2.0.0',
     user: null,
     map: {

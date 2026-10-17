@@ -8,7 +8,7 @@ import {
 import { coreWazeDir, presentWazeSetup, readMigratedRuntime, readSetupFile } from './setup.js';
 import { SetupStarter, setupHelperPath } from './setupStart.js';
 import { openSightings, queryPoliceHeatmap, SightingKeeper, SIGHTING_RETENTION_MS } from './sightings.js';
-import { AreaMonitor, monitorSettingsOf, MONITOR_TASK_ID } from './monitor.js';
+import { AreaMonitor, intervalMinutesOf, monitorOn, monitorTargets, MONITOR_TASK_ID } from './monitor.js';
 
 const HEATMAP_DEFAULT_MS = 2 * 60 * 60 * 1000;
 const HEATMAP_MIN_MS = 60 * 60 * 1000;
@@ -69,35 +69,37 @@ const plugin: ServerPlugin = {
     stopMonitor = () => monitor.stop();
 
     /**
-     * The scheduled poll. The host reads a task's interval once, when the task is registered, so the task is
-     * registered when the first area is set and keeps that interval until the plugin next starts. The areas are
-     * read again on every run, so changing them takes effect at the next run.
+     * The scheduled poll. The host has no way to remove a task and reads its interval once, at registration. So the
+     * task is registered the first time monitoring is on (at activation, or when the checkbox is ticked), and stays
+     * registered with that interval until the plugin next starts. While the checkbox is off the task still runs, but
+     * its run returns at once. The Areas are read on every run, so changing them takes effect at the next run.
      */
     let scheduledMinutes: number | null = null;
     const scheduleMonitor = (settings: Record<string, unknown>): void => {
-      const { areas, problems, intervalMinutes } = monitorSettingsOf(settings);
-      for (const problem of problems) ctx.log.warn(`Monitored areas: ${problem}. It is ignored.`);
+      if (!monitorOn(settings)) return;
+      const intervalMinutes = intervalMinutesOf(settings.monitorIntervalMinutes);
       if (scheduledMinutes !== null) {
         if (intervalMinutes !== scheduledMinutes) {
           ctx.log.info(`Area monitoring keeps its ${scheduledMinutes}-minute schedule until the plugin restarts; ${intervalMinutes} minutes applies then`);
         }
         return;
       }
-      if (areas.length === 0) return;
       try {
         ctx.tasks.register({
           id: MONITOR_TASK_ID,
-          name: 'Police reports for monitored areas',
-          description: 'Polls the areas set in Settings and records police sightings for the heatmap.',
+          name: 'Police reports for my areas',
+          description: 'Polls the areas set up in the app (Settings, Map, Areas) and records police sightings for the heatmap. Runs only while Monitor my areas is on.',
           intervalMinutes,
           run: async (log) => {
-            const current = monitorSettingsOf(ctx.settings.get());
-            for (const problem of current.problems) log(`Ignored: ${problem}`);
-            return monitor.poll(current.areas, log);
+            if (!monitorOn(ctx.settings.get())) return { ok: true, message: 'Skipped: monitoring is off' };
+            const { targets, problems } = monitorTargets(ctx.areas());
+            for (const problem of problems) log(problem);
+            if (targets.length === 0) return { ok: true, message: 'Skipped: no areas to scan' };
+            return monitor.poll(targets, log);
           },
         });
         scheduledMinutes = intervalMinutes;
-        ctx.log.info(`Polling ${areas.length} monitored area${areas.length === 1 ? '' : 's'} every ${intervalMinutes} minutes`);
+        ctx.log.info(`Area monitoring is on: polling your configured areas every ${intervalMinutes} minutes`);
       } catch (err) {
         ctx.log.error(`Area monitoring could not be scheduled: ${err instanceof Error ? err.message : String(err)}`);
       }
