@@ -6,13 +6,15 @@ import type { WazeHeatPoint } from './types.js';
  * corner and the Settings tab read and write. Ported from core map/policeHeat.ts.
  */
 
-/** The windows the selector offers. The server clamps any window to one hour to seven days. */
+/** The windows the selector offers. The server clamps any window to one hour to sixty days (the sighting retention). */
 export const HEAT_WINDOWS = [
   { label: '1h', ms: 3_600_000 },
   { label: '2h', ms: 7_200_000 },
   { label: '6h', ms: 21_600_000 },
   { label: '24h', ms: 86_400_000 },
   { label: '7d', ms: 604_800_000 },
+  { label: '30d', ms: 2_592_000_000 },
+  { label: '60d', ms: 5_184_000_000 },
 ] as const;
 
 export const HEAT_DEFAULT_MS = 7_200_000;

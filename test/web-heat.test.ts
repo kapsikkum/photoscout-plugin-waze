@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHeatWindowStore, HEAT_DEFAULT_MS, HEAT_WINDOWS, heatmapGeoJSON } from '../src/web/heat.js';
 
-test('the windows run from one hour to seven days, the same clamp the server applies, and the default is one of them', () => {
+test('the windows run from one hour to sixty days, the same clamp the server applies, and the default is one of them', () => {
   const ms = HEAT_WINDOWS.map((w) => w.ms);
   assert.deepEqual(ms, [...ms].sort((a, b) => a - b), 'ascending');
   assert.equal(ms[0], 60 * 60 * 1000);
-  assert.equal(ms[ms.length - 1], 7 * 24 * 60 * 60 * 1000);
+  assert.equal(ms[ms.length - 1], 60 * 24 * 60 * 60 * 1000);
   assert.ok(ms.includes(HEAT_DEFAULT_MS));
   assert.equal(HEAT_DEFAULT_MS, 2 * 60 * 60 * 1000);
 });

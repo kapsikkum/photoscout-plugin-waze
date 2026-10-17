@@ -77,12 +77,12 @@ test('the heatmap answers from the plugin database with weighted points, without
   assert.equal(h.requests.length, before, 'the heatmap never asks the harvester');
 });
 
-test('the heatmap window is clamped to one hour to seven days, and defaults to two hours', async () => {
+test('the heatmap window is clamped to one hour to sixty days, and defaults to two hours', async () => {
   const p = await startPlugin();
   const windowOf = async (extra: string) => (await call(p.router, '/heatmap', { ...BOX, ...parseExtra(extra) })).json.windowMs;
   assert.equal(await windowOf('&windowMs=1'), 3600000);
   assert.equal(await windowOf('&windowMs=86400000'), 86400000);
-  assert.equal(await windowOf('&windowMs=99999999999'), 604800000);
+  assert.equal(await windowOf('&windowMs=99999999999'), 5_184_000_000);
   assert.equal(await windowOf('&windowMs=abc'), 7200000);
   assert.equal(await windowOf('&windowMs='), 7200000);
   assert.equal(await windowOf(''), 7200000);

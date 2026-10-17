@@ -49,7 +49,7 @@ Other ways to start it:
 1. In PhotoScout, as an admin, open **Settings → Admin → Plugins**.
 2. Install the plugin one of two ways:
    - **Browse:** find **Waze police & hazards** (`map.24thframe.waze`) in the default registry, and install it.
-   - **Install manually:** download `map.24thframe.waze-1.2.0.zip` from the [v1.2.0 release](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.2.0), and choose it.
+   - **Install manually:** download `map.24thframe.waze-1.3.0.zip` from the [v1.3.0 release](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.3.0), and choose it.
 3. Read the permissions the install dialog lists (the harvester's network hosts, the API key, storage and a background task), then accept.
 4. Under **Installed**, make sure the plugin is switched on.
 
@@ -91,6 +91,7 @@ Notes:
 - An area that cannot be scanned (for example, a zero radius) is skipped and written to the plugin's log. The other areas still run.
 - The interval is set when monitoring first turns on. A changed interval takes effect only after you disable and re-enable the plugin, or restart PhotoScout. Changes to your areas apply at the next poll, with no restart.
 - Keep areas to a neighbourhood. The harvester covers only what Waze loads around each area's box, and boxes are widened to whole cells of about 5 km.
+- The heatmap's time window (the segmented control on the map and in the Settings tab) runs from 1 hour to 60 days. Police sightings are kept for 60 days, so the longer windows have history to draw on.
 
 ## Requirements and gotchas
 
@@ -109,13 +110,13 @@ Notes:
 - [harvester/README.md](harvester/README.md): the container in depth (runtime, APK handling, first-run screens, API).
 - Plugin registry: [kapsikkum/photoscout-plugins](https://github.com/kapsikkum/photoscout-plugins).
 - Container image: [photoscout-waze-harvester on GHCR](https://github.com/users/kapsikkum/packages/container/package/photoscout-waze-harvester).
-- Plugin release: [v1.2.0](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.2.0).
+- Plugin release: [v1.3.0](https://github.com/kapsikkum/photoscout-plugin-waze/releases/tag/v1.3.0).
 
 ## For developers
 
 ```sh
 npm install
-npm run check        # typecheck, tests, then build dist/map.24thframe.waze-1.2.0.zip
+npm run check        # typecheck, tests, then build dist/map.24thframe.waze-1.3.0.zip
 node ../photoscout/scripts/plugin.mjs validate .
 ```
 

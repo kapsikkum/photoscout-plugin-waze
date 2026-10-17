@@ -133,16 +133,22 @@ test('the banner gets the reports a driver is warned about (no traffic jams), an
       const poll = rec.polls.at(-1) as PollRecord;
       const alerts = [report('p1', 'POLICE', { street: 'George St' }), report('j1', 'JAM')];
 
+      // A queued/scanning answer carries no reports yet: it sets the status line but leaves the pins and
+      // warnings as they are, so panning into an unscanned area does not blink them away.
       poll.options.onData(feed('queued', alerts));
-      assert.deepEqual(drive.reports.at(-1)?.map((a) => a.id), ['p1'], 'the jam is for the map only');
-      assert.equal(drive.reports.at(-1)?.[0].detail, 'George St');
       assert.deepEqual(drive.statuses.at(-1), { state: 'waiting', text: 'Waiting to check reports for this area…' });
-      assert.equal(drive.map.features(`${DRIVE_PREFIX}reports-src`).length, 2, 'the map shows every type, the jam too');
+      assert.equal(drive.map.features(`${DRIVE_PREFIX}reports-src`).length, 0, 'nothing is drawn while a scan is queued');
 
       poll.options.onData(feed('scanning', alerts));
       assert.equal(drive.statuses.at(-1)?.state, 'checking');
+      assert.equal(drive.map.features(`${DRIVE_PREFIX}reports-src`).length, 0, 'still nothing while scanning');
+
       poll.options.onData(feed('stale', alerts));
+      assert.deepEqual(drive.reports.at(-1)?.map((a) => a.id), ['p1'], 'the jam is for the map only');
+      assert.equal(drive.reports.at(-1)?.[0].detail, 'George St');
       assert.equal(drive.statuses.at(-1)?.state, 'stale');
+      assert.equal(drive.map.features(`${DRIVE_PREFIX}reports-src`).length, 2, 'the map shows every type, the jam too');
+
       poll.options.onData(feed('fresh', alerts));
       assert.equal(drive.statuses.at(-1), null, 'a fresh feed clears the line');
     } finally {

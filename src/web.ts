@@ -166,10 +166,13 @@ const plugin: WebPlugin = {
           fetch: ({ signal, bounds }) => host.data.json<WazeAlertsResponse>(alertsPath(boxOf(bounds), 'navigation'), { signal }),
           onData: (res) => {
             failures.recover();
+            ctx.setStatus(driveStatusFor(res.state));
+            // While a new area is still being scanned ('queued'/'scanning', no reports yet), keep the pins and
+            // the last warnings instead of clearing them; update both only on a real answer ('fresh'/'stale').
+            if (res.state === 'queued' || res.state === 'scanning') return;
             latest = driveAlerts(res.alerts, Date.now());
             ctx.report(latest);
             setSourceData(ctx.map, pins.reportsSource, reportGeoJSON(res.alerts));
-            ctx.setStatus(driveStatusFor(res.state));
             say();
           },
           retryAfterMs: (res) => (res.state === 'fresh' ? null : res.retryAfterMs),
@@ -232,7 +235,9 @@ const plugin: WebPlugin = {
         fetch: ({ signal, bounds }) => host.data.json<WazeAlertsResponse>(alertsPath(boxOf(bounds)), { signal }),
         onData: (res) => {
           pinFailures.recover();
-          setSourceData(map, ids.reportsSource, reportGeoJSON(res.alerts));
+          // 'queued'/'scanning' answers carry no reports yet (a new area is still being scanned); keep the pins
+          // already on the map instead of blinking them away while panning. 'fresh'/'stale' carry the real set.
+          if (res.state !== 'queued' && res.state !== 'scanning') setSourceData(map, ids.reportsSource, reportGeoJSON(res.alerts));
           // Log a state change once; no reports is never written up as an all-clear.
           const key = `${res.state}:${res.alerts.length}`;
           if (key !== lastLogged) {

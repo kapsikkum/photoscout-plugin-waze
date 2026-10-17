@@ -5,8 +5,8 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 
-/** How long a police report is kept. The heatmap's widest window is the same length. */
-export const SIGHTING_RETENTION_MS = 604800000;
+/** How long a police report is kept. The heatmap's widest window (60d) is the same length. */
+export const SIGHTING_RETENTION_MS = 5_184_000_000; // 60 days
 
 // One row per report id: seeing it again moves last_seen on, and nothing else is kept.
 const SCHEMA = `

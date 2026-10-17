@@ -65,8 +65,8 @@ test('prune forgets reports older than the retention and keeps the rest', () => 
   assert.equal(prunePoliceSightings(db, NOW, 7 * DAY), 0);
 });
 
-test('the retention is seven days, the same as the heatmap widest window', () => {
-  assert.equal(SIGHTING_RETENTION_MS, 7 * DAY);
+test('the retention is sixty days, the same as the heatmap widest window', () => {
+  assert.equal(SIGHTING_RETENTION_MS, 60 * DAY);
 });
 
 test('the heatmap reads at most the newest 5000 reports', () => {
