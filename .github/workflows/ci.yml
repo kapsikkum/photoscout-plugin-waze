@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Plugin typecheck, tests and build
+        run: npm run check
+      - name: Harvester Python tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/waze-tests"
+          "$RUNNER_TEMP/waze-tests/bin/pip" install -r harvester/requirements-dev.txt
+          "$RUNNER_TEMP/waze-tests/bin/python" -m unittest discover -s harvester -p 'test_*.py'

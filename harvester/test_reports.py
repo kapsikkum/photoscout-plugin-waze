@@ -44,6 +44,37 @@ class ReportTests(unittest.TestCase):
         store.receive('connection', frame(message(1001, message(2794, text(1, 'reported-police')))))
         self.assertEqual(store.reports, {})
 
+    def test_rm_alert_old_command_removes_by_numeric_id_and_preserves_batch_order(self):
+        store = ReportStore()
+        store.receive('connection', frame(report(uuid='reported-police')))
+        self.assertIn('reported-police', store.reports)
+        self.assertEqual(store.reports['reported-police']['aid'], '123')
+        store.receive('connection', frame(message(1001, text(2001, 'RmAlert,123\n'))))
+        self.assertEqual(store.reports, {})
+        self.assertEqual(store.seen_at, {})
+        # If RmAlert precedes AddAlertAction for the same id in one batch, the re-added alert survives.
+        re_added = message(1001, text(2001, 'RmAlert,123\n')) + report(uuid='reported-police')
+        store.receive('connection', frame(re_added))
+        self.assertIn('reported-police', store.reports)
+        # If RmAlert follows AddAlertAction in one batch, the alert is removed.
+        added_then_removed = report(uuid='reported-police') + message(1001, text(2001, 'RmAlert,123\n'))
+        store.receive('connection', frame(added_then_removed))
+        self.assertEqual(store.reports, {})
+
+    def test_viewport_evicts_distant_alerts_and_ignores_stale_inflight_packets(self):
+        store = ReportStore()
+        store.receive('connection', frame(report(uuid='sydney-police')))
+        self.assertIn('sydney-police', store.reports)
+        # Moving to Bathurst (149.58, -33.42) evicts the distant Sydney (151.21, -33.88) alert
+        store.set_viewport(149.58, -33.42)
+        self.assertEqual(store.reports, {})
+        prev_update = store.last_report_update
+        # An in-flight Sydney packet arriving after moving to Bathurst is ignored
+        store.receive('connection', frame(report(uuid='late-sydney-police')))
+        self.assertEqual(store.reports, {})
+        self.assertEqual(store.last_report_update, prev_update)
+
+
     def test_mobile_speed_camera_subtype_and_absent_timestamps(self):
         alerts, _ = parse_rt_reports(report(police_type=3, report_time=None))
         self.assertEqual(alerts[0]['subType'], 'POLICE_MOBILE_CAMERA')

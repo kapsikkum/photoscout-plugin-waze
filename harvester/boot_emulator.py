@@ -141,7 +141,8 @@ def prepare_debug_transport():
     try:
         run('adb', '-s', 'emulator-5554', 'root')
     except subprocess.CalledProcessError as exc:
-        if 'timeout expired while waiting for device' not in (exc.stderr or exc.stdout or '').lower():
+        output = (exc.stderr or exc.stdout or '').lower()
+        if 'timeout expired while waiting for device' not in output and 'unable to connect for root' not in output:
             raise
     run('adb', '-s', 'emulator-5554', 'wait-for-device', timeout=180)
     if run('adb', '-s', 'emulator-5554', 'shell', 'id', '-u', timeout=60).stdout.strip() != '0':
@@ -261,7 +262,7 @@ def start_report_reader():
     run('adb', '-s', 'emulator-5554', 'push', str(binary), '/data/local/tmp/frida-server', timeout=600)
     run('adb', '-s', 'emulator-5554', 'shell', 'chmod', '755', '/data/local/tmp/frida-server')
     try:
-        run('adb', '-s', 'emulator-5554', 'shell', '/data/local/tmp/frida-server', '-D', timeout=300)
+        run('adb', '-s', 'emulator-5554', 'shell', '/data/local/tmp/frida-server -D >/dev/null 2>&1 </dev/null', timeout=15)
     except subprocess.TimeoutExpired:
         # The software guest may start the daemon before ADB returns. Preserve
         # that process; the collector must still connect before reporting ready.
@@ -288,7 +289,7 @@ def restore_persisted_ramdisk():
 
 def is_magisk_active():
     try:
-        out = emulator_adb('shell', 'su', '-c', 'id', timeout=15)
+        out = emulator_adb('shell', 'su', '-c', 'id', timeout=5)
         return 'uid=0' in out
     except Exception:
         return False
@@ -477,19 +478,19 @@ def initialize():
     try:
         try:
             wait_emulator_boot()
-        except RuntimeError:
+        except Exception:
             boot_failed = True
             raise
         with harvester.state_lock:
             harvester.state.update(device_connected=True, boot_completed=True, setup_stage='preparing_android')
         
-        # Ensure Magisk is active; if not, patch via rootAVD and reboot
-        if not is_magisk_active():
+        # Ensure Magisk is active; if not, patch via rootAVD once and reboot
+        if not Path('/data/ramdisk.img').is_file() and not is_magisk_active():
             if root_avd_with_magisk():
                 start_emulator()
                 try:
                     wait_emulator_boot()
-                except RuntimeError:
+                except Exception:
                     boot_failed = True
                     raise
         

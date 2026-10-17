@@ -1,0 +1,7 @@
+# Add on Linux hosts with /dev/kvm (SVM/VT-x enabled in firmware) for ~10x faster Android:
+#   docker compose -f docker-compose.waze-reports.yml -f docker-compose.waze-kvm.yml up -d
+#   Screen access (one-time Waze welcome screens) is set in docker-compose.waze-reports.yml: WAZE_SCREEN_ACCESS and the 127.0.0.1:5556 port.
+services:
+  waze-reports:
+    devices:
+      - /dev/kvm:/dev/kvm

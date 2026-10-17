@@ -1,0 +1,30 @@
+# Standalone reports stack for Linux, Linux VMs and Docker Desktop on Windows.
+# No KVM, privileged mode, or Docker socket mount. First boot/download takes time.
+services:
+  waze-reports:
+    build:
+      context: ./harvester
+      dockerfile: Dockerfile.emulator
+      # Changing the image gives a new AVD (Waze reinstalled, first-run screen again).
+      # args:
+      #   WAZE_SYSTEM_IMAGE: system-images;android-36;google_apis;x86_64
+    environment:
+      SERVICE_API_KEY: ${WAZE_HARVESTER_API_KEY:?Set a shared random bridge key}
+      WAZE_INITIAL_LNG: ${WAZE_INITIAL_LNG:-151.2093}
+      WAZE_INITIAL_LAT: ${WAZE_INITIAL_LAT:--33.8688}
+      # Keep at or below `cpus` below.
+      WAZE_EMULATOR_CORES: ${WAZE_EMULATOR_CORES:-4}
+      # Screen access for Waze's one-time welcome screens (loopback only; see harvester/README.md).
+      # WAZE_SCREEN_ACCESS: "1"
+    ports:
+      - "127.0.0.1:8098:8088"
+      # - "127.0.0.1:5556:5556"   # with WAZE_SCREEN_ACCESS=1: adb connect 127.0.0.1:5556 && scrcpy -s 127.0.0.1:5556
+    volumes:
+      - waze-android:/data
+    shm_size: 512mb
+    mem_limit: 6g
+    cpus: 4
+    init: true
+    restart: unless-stopped
+volumes:
+  waze-android:

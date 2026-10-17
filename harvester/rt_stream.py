@@ -41,11 +41,21 @@ class ReportStore:
         self.seen_at = {}
         self.buffers = {}
         self.streams = {}
+        self.viewport = None
         self.last_received = 0
         self.last_report_update = 0
         self.ready = False
         self.authenticated = False
         self.error = None
+
+    def set_viewport(self, lng, lat, radius=.35):
+        with self.lock:
+            self.viewport = (lng, lat, radius)
+            outside = [k for k, a in self.reports.items()
+                       if abs(a['point'][0] - lng) > radius or abs(a['point'][1] - lat) > radius]
+            for key in outside:
+                self.reports.pop(key, None)
+                self.seen_at.pop(key, None)
 
     def receive(self, connection, data):
         with self.lock:
@@ -84,18 +94,33 @@ class ReportStore:
                             if command == 2745 and command_wire == 2:
                                 login = _message(payload)
                                 self.authenticated = bool(login.get(1)) and not bool(login.get(2))
-                    if alerts:
+                    had_raw_alerts = bool(alerts)
+                    if had_raw_alerts:
                         self.authenticated = True
+                    for target in removed:
+                        keys = [k for k, a in self.reports.items()
+                                if k == target or a.get('uuid') == target or a.get('aid') == target]
+                        for key_to_remove in keys:
+                            self.reports.pop(key_to_remove, None)
+                            self.seen_at.pop(key_to_remove, None)
+                    if self.viewport and alerts:
+                        vlng, vlat, vrad = self.viewport
+                        alerts = [a for a in alerts
+                                  if abs(a['point'][0] - vlng) <= vrad and abs(a['point'][1] - vlat) <= vrad]
                     now = time.time()
-                    if alerts or removed:
-                        self.last_report_update = now
                     for alert in alerts:
+                        aid = alert.get('aid')
+                        if aid:
+                            stale = [k for k, a in self.reports.items() if k != alert['id'] and a.get('aid') == aid]
+                            for key_to_remove in stale:
+                                self.reports.pop(key_to_remove, None)
+                                self.seen_at.pop(key_to_remove, None)
                         self.reports[alert['id']] = alert
                         self.seen_at[alert['id']] = now
-                    for uuid in removed:
-                        self.reports.pop(uuid, None)
-                        self.seen_at.pop(uuid, None)
-                    self.last_received = now
+                    if alerts:
+                        self.last_report_update = now
+                    if alerts or not had_raw_alerts or removed:
+                        self.last_received = now
                     self.error = None
             self.buffers[connection] = buf
 
@@ -171,6 +196,10 @@ class ReportCollector:
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Waze did not start in the software guest')
                 time.sleep(5)
+                try:
+                    self.adb_run('shell', 'am', 'start', '-n', component)
+                except RuntimeError:
+                    pass
         else:
             pid = self.device.spawn(['com.waze'])
         self.session = self.device.attach(pid)
@@ -201,13 +230,15 @@ class ReportCollector:
 
     def move(self, lng, lat):
         with self.move_lock:
-            if self.centre and abs(self.centre[0]-lng) < .02 and abs(self.centre[1]-lat) < .02:
+            if (self.centre and abs(self.centre[0]-lng) < .02 and abs(self.centre[1]-lat) < .02
+                    and time.time() - self.store.last_received < 90):
                 return False
             # This bridge deliberately controls an emulator, never a physical phone's GPS.
             self.adb_run('emu', 'geo', 'fix', str(lng), str(lat))
             self.adb_run('shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', f'"waze://?ll={lat},{lng}&z=12"')
             self.centre = (lng, lat)
             self.moved_at = time.time()
+            self.store.set_viewport(lng, lat)
             return True
 
     def close(self):
@@ -221,12 +252,13 @@ class ReportCollector:
 
     def scan(self, lng, lat):
         moved = self.move(lng, lat)
+        start = self.moved_at if moved and self.moved_at else time.time()
         # Give the app's GPS/map requests time to finish before another user can
         # move this same emulator. Cached responses return immediately via the queue.
-        start = time.time()
         deadline = time.monotonic() + (10 if moved else 2)
         while time.monotonic() < deadline:
-            if self.store.last_received > start and (not moved or self.store.last_report_update > start):
+            if self.store.last_received > start and (
+                    not moved or self.store.last_report_update > start or time.time() - self.store.last_received >= .8):
                 break
             time.sleep(.1)
         snapshot = self.store.snapshot()

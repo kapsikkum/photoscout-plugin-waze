@@ -1,6 +1,6 @@
 # Waze police and hazard reports
 
-This folder is the harvester container. For the simple run steps, see the top-level `README.md`. Commands here that use `npm run waze:setup` or `docker-compose.*.yml` run from the PhotoScout repo, which keeps the same files under `services/waze-harvester`.
+This folder is the harvester container. For the simple run steps, see the top-level `README.md`. Commands here that use `docker-compose.*.yml` run from the root of this repository (`photoscout-plugin-waze`).
 
 This bridge runs Waze on a controlled Android emulator and reads its realtime police and hazard reports. It exposes only report locations, types, descriptions and times; reporter identity and session credentials are not returned. It does not mint or require a Firebase App Check token.
 

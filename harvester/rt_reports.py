@@ -18,6 +18,14 @@ def _text(data, field):
     return value.decode('utf8', errors='replace') if isinstance(value, bytes) else None
 
 
+def _remove_id(alerts, removed, target):
+    if not target:
+        return
+    alerts[:] = [a for a in alerts if a['id'] != target and a.get('uuid') != target and a.get('aid') != target]
+    if target not in removed:
+        removed.append(target)
+
+
 def parse_rt_reports(data):
     alerts, removed = [], []
     for field, wire, element in _fields(data):
@@ -26,10 +34,15 @@ def parse_rt_reports(data):
         for command, command_wire, payload in _fields(element):
             if command_wire != 2:
                 continue
+            if command == 2001:
+                text = payload.decode('utf8', errors='replace') if isinstance(payload, bytes) else ''
+                for line in text.splitlines():
+                    if line.startswith('RmAlert,'):
+                        _remove_id(alerts, removed, line.split(',', 1)[1].strip())
+                continue
             if command == 2794:
-                uuid = _text(_message(payload), 1)
-                if uuid:
-                    removed.append(uuid)
+                _remove_id(alerts, removed, _text(_message(payload), 1))
+                continue
             if command != 2708:
                 continue
             action = _message(payload)
@@ -52,9 +65,15 @@ def parse_rt_reports(data):
             police = _message(details.get(2, b''))
             address = _message(reporting.get(8, b''))
             uuid = _text(alert, 6)
+            aid = str(alert[1]) if isinstance(alert.get(1), int) else None
+            alert_id = uuid or aid or ''
+            if not alert_id:
+                continue
             report_time = reporting.get(4)
+            removed[:] = [r for r in removed if r not in (alert_id, uuid, aid)]
+            alerts[:] = [a for a in alerts if a['id'] != alert_id and (not aid or a.get('aid') != aid)]
             # report_time is UNIX seconds in this protocol, not pubMillis.
-            alerts.append({'id': uuid or str(alert.get(1, '')), 'uuid': uuid,
+            alerts.append({'id': alert_id, 'uuid': uuid, 'aid': aid,
                            'type': kind, 'subType': (({1: 'POLICE_DEFAULT', 2: 'POLICE_HIDDEN', 3: 'POLICE_MOBILE_CAMERA'}.get(police.get(1)) or POLICE_SUBTYPES.get(info.get(2))) if kind == 'POLICE' else None),
                            'bearing': info.get(6),
                            'point': [lng, lat], 'description': _text(reporting, 3),
@@ -62,3 +81,4 @@ def parse_rt_reports(data):
                            'reportTime': report_time * 1000 if isinstance(report_time, int) else None,
                            'thumbsUp': reporting.get(9)})
     return alerts, removed
+

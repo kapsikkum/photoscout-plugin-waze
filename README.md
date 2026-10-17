@@ -41,7 +41,7 @@ On Windows, run these in WSL, or in Git Bash with `MSYS_NO_PATHCONV=1` in front 
 
 Other ways to start it:
 
-- **PhotoScout's compose files.** From the PhotoScout repo, run `docker compose -f docker-compose.yml -f docker-compose.waze-reports.yml up -d --build` (add `-f docker-compose.waze-kvm.yml` on Linux with `/dev/kvm`). Set `WAZE_HARVESTER_API_KEY` first. These build PhotoScout's own copy of the image and mount no APK, so see [harvester/README.md](harvester/README.md) for the `WAZE_APK_PATH` options.
+- **Compose files in this repo.** Run `docker compose -f docker-compose.waze-reports.yml up -d --build` (add `-f docker-compose.waze-kvm.yml` on Linux with `/dev/kvm`). Set `WAZE_HARVESTER_API_KEY` first. See [harvester/README.md](harvester/README.md) for `WAZE_APK_PATH` options.
 - **Build it yourself** from this repo, with `docker build -f harvester/Dockerfile.emulator -t photoscout-waze-harvester harvester`. Then use `photoscout-waze-harvester` in place of the GHCR name above. The build is several GB.
 
 ### 2. Install the plugin
@@ -128,5 +128,5 @@ Routes, under `/api/plugins/map.24thframe.waze/`: `GET /status`, `GET /alerts` a
 | `src/server.ts`, `src/monitor.ts`, `src/feed.ts`, `src/sightings.ts` | server routes, area monitor, harvester client, heatmap store |
 | `src/web.ts`, `src/web/` | map layers, legend, popup, Drive warnings, Settings tab |
 | `src/sdk/` | vendored PhotoScout plugin types. Do not edit; re-copy with PhotoScout's `sdk-check --write`. |
-| `harvester/` | copy of PhotoScout's `services/waze-harvester` |
+| `harvester/` | Android emulator and police/hazard report bridge |
 | `.github/workflows/harvester-image.yml` | builds the harvester image and pushes it to GHCR |
