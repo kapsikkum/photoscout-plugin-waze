@@ -1,7 +1,7 @@
 {
   "id": "map.24thframe.waze",
   "name": "Waze police & hazards",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Police, hazard and road reports from Waze, read from a self-hosted harvester, with a police heatmap built from sightings it has seen.",
   "author": "PhotoScout",
   "homepage": "https://www.waze.com",

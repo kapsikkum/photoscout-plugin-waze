@@ -131,7 +131,12 @@ class FakeCanvas extends FakeEl {
 export function installFakeDom(): () => void {
   const g = globalThis as { document?: unknown };
   const before = g.document;
-  g.document = { createElement: (tag: string) => (tag === 'canvas' ? new FakeCanvas(tag) : new FakeEl(tag)) };
+  const head = new FakeEl('head');
+  g.document = {
+    createElement: (tag: string) => (tag === 'canvas' ? new FakeCanvas(tag) : new FakeEl(tag)),
+    head,
+    getElementById: (id: string) => [head, ...descendants(head)].find((e) => e.getAttribute('id') === id) ?? null,
+  };
   return () => {
     if (before === undefined) delete g.document;
     else g.document = before;

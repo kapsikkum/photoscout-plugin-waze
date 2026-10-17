@@ -42,8 +42,25 @@ export function renderRangeSelector(el: HTMLElement, store: HeatWindowStore): ()
   };
   paint(store.get());
   const release = store.subscribe(paint);
-  el.replaceChildren(h('div', { class: 'seg', role: 'group', 'aria-label': 'Police heatmap time window' }, ...buttons.map((b) => b.button)));
+  ensureSegStyle();
+  el.replaceChildren(h('div', { class: 'seg waze-seg', role: 'group', 'aria-label': 'Police heatmap time window' }, ...buttons.map((b) => b.button)));
   return () => release();
+}
+
+/**
+ * The host's `.seg` active style is a pale accent tint, which reads as washed-out on the floating map corner.
+ * Give this plugin's selector a solid accent fill (as the app's primary buttons have), scoped to `.waze-seg`
+ * so nothing else changes. Injected once, lazily, so importing this module in Node (the build check) touches
+ * no DOM.
+ */
+const SEG_STYLE_ID = 'waze-seg-style';
+function ensureSegStyle(): void {
+  if (document.getElementById(SEG_STYLE_ID)) return;
+  const style = h('style', { id: SEG_STYLE_ID });
+  style.textContent =
+    `.waze-seg button.active, .waze-seg button[aria-pressed='true'] {` +
+    ` background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }`;
+  document.head.append(style);
 }
 
 /**
